@@ -1,0 +1,285 @@
+---
+title: "proyecto regression"
+author: "vega carmona"
+date: "2025-09-30"
+output: html_document
+---
+
+```{r}
+setwd("C:/Users/Vega Carmona/OneDrive/ESTADISTICA/QUART/MEMDA/projecte")
+datos <- read.csv("train.csv")
+test <- read.csv("test.csv")
+```
+
+```{r}
+# --- Preliminaries ---------------------------------------------------------
+
+# Conversión a factores
+datos$ID <- factor(datos$ID)
+datos$key <- factor(datos$key)
+datos$audio_mode <- factor(datos$audio_mode) # 0 = menor, 1 = mayor
+datos$time_signature <- factor(datos$time_signature)
+
+clases <- sapply(datos, class)
+
+varNum <- names(clases)[which(clases %in% c("numeric", "integer"))]
+varCat <- names(clases)[which(clases %in% c("character", "factor"))]
+```
+
+```{r}
+# --- 2.1.1 Numerical: Description -----------------------------------------
+library(psych)
+psych::describe(datos[, varNum])
+```
+
+```{r}
+# --- 2.1.1 Numerical: Graphics (base) -------------------------------------
+par(mfrow = c(2, 4))
+for (var in varNum) {
+  hist(datos[, var], main = paste0("Histograma variable ", var))
+  boxplot(datos[, var], main = paste0("Boxplot variable ", var))
+}
+par(mfrow = c(1, 1))
+```
+
+
+# --- 2.1.1 Numerical: Graphics (ggplot2 + patchwork) ----------------------
+library(ggplot2)
+library(patchwork)
+
+plots <- list()
+
+for (var in varNum) {
+  histo <- ggplot(datos, aes(x = .data[[var]])) +
+    geom_histogram(aes(y = ..density..), colour = "black", fill = "white") +
+    geom_density(alpha = .2, fill = "#FF6666") +
+    geom_vline(aes(xintercept = mean(.data[[var]], na.rm = TRUE)),
+               color = "blue", linetype = "dashed", linewidth = 1) +
+    ggtitle(paste("Histograma de", var))
+  boxp <- ggplot(datos, aes(x = .data[[var]])) +
+    geom_boxplot(outlier.colour = "red", outlier.shape = 8, outlier.size = 4) +
+    ggtitle(paste("Boxplot de", var))
+
+  plots <- append(plots, list(histo, boxp))
+}
+
+# Combinar en un grid automático con 2 columnas
+final_plot <- Reduce(`+`, plots) + plot_layout(ncol = 2)
+final_plot
+
+```{r}
+# --- 2.1.2 Categorical: Description ---------------------------------------
+for (var in varCat) {
+  tablaAbs <- data.frame(table(datos[, var]))
+  tablaFreq <- data.frame(table(datos[, var]) / sum(table(datos[, var])))
+  m <- match(tablaAbs$Var1, tablaFreq$Var1)
+  tablaAbs[, "FreqRel"] <- tablaFreq[m, "Freq"]
+  colnames(tablaAbs) <- c("Categoria", "FreqAbs", "FreqRel")
+  cat("===============", var, "===================================\n")
+  print(tablaAbs)
+  cat("==================================================\n")
+}
+```
+
+```{r}
+# --- 2.1.2 Categorical: Graphics (base) -----------------------------------
+par(mfrow = c(2, 3))
+for (var in varCat) {
+  barplot(table(datos[, var]))
+}
+par(mfrow = c(1, 1))
+```
+
+```{r}
+# --- 2.1.2 Categorical: Graphics (ggplot2 + gridExtra) --------------------
+library(gridExtra)
+
+plots <- list()  # lista vacía
+i <- 1           # índice
+
+for (var in varCat) {
+  tabla <- data.frame(table(datos[, var]) / sum(table(datos[, var])))
+  p <- ggplot(data = tabla, aes(x = Var1, y = Freq)) +
+    geom_bar(stat = "identity", fill = "steelblue") +
+    geom_text(aes(label = paste0(round(Freq * 100, 2), "%")),
+              vjust = 1.6, color = "white", size = 3.5) +
+    theme_minimal() +
+    labs(title = paste("Distribución de", var), x = var, y = "Proporción")
+
+  plots[[i]] <- p
+  i <- i + 1
+}
+# Mostrar todos los gráficos en un grid (ejemplo con 2 columnas)
+grid.arrange(grobs = plots, ncol = 2)
+
+```
+
+
+```{r}
+# --- 2.2 Bivariant analysis -----------------------------------------------
+
+# 2.2.1 Numerical vs. numerical — Description
+cor(na.omit(datos[, varNum]))
+```
+
+```{r}
+# 2.2.1 Numerical vs. numerical — Graphics (base / PerformanceAnalytics)
+library(PerformanceAnalytics)
+chart.Correlation(as.matrix(datos[, varNum]), histogram = TRUE, pch = 12)
+```
+
+```{r}
+# 2.2.1 Numerical vs. numerical — Graphics (ggplot2 / ggcorrplot)
+library(ggcorrplot)
+corr <- round(cor(datos[, varNum]), 1)
+ggcorrplot(corr, lab = TRUE)
+```
+
+```{r}
+# 2.2.2 Numerical vs. categorical — Description
+for (varN in varNum) {
+  for (varC in varCat) {
+   print(psych::describeBy(datos[, varN], group = datos[, varC]))
+  }
+}
+```
+
+```{r}
+# 2.2.2 Numerical vs. categorical — Graphics (ggplot2)
+library(ggplot2)
+library(gridExtra)
+
+plots <- list()
+i <- 1
+
+for (varC in varCat) {
+  for (varN in varNum) {
+    grafico <- ggplot(datos, aes(x = .data[[varN]], fill = .data[[varC]])) +
+      geom_histogram(colour = "black",
+                     lwd = 0.75,
+                     linetype = 1,
+                     position = "identity",
+                     alpha = 0.5) +
+      labs(title = paste("Histograma de", varN, "por", varC),
+           x = varN, y = "Frecuencia", fill = varC) +
+      theme_minimal()
+    plots[[i]] <- grafico
+    i <- i + 1
+  }
+}
+# Mostrar todos en un grid (2 columnas)
+grid.arrange(grobs = plots, ncol = 2)
+```
+
+```{r}
+# 2.2.3 Categorical vs. categorical — Description
+for (varc1 in varCat) {
+  for (varc2 in varCat) {
+    if (varc1 != varc2) {
+      prop_table <- prop.table(table(datos[, varc1], datos[, varc2]))
+      cat("=============", varc1, " vs. ", varc2, "=========================\n")
+      print(prop_table)
+    }
+  }
+}
+
+# 2.2.3 Categorical vs. categorical — Graphics (base)
+par(mfrow = c(3, 3))
+for (varc1 in varCat) {
+  for (varc2 in varCat) {
+    if (varc1 != varc2) {
+      prop_table <- prop.table(table(datos[, varc1], datos[, varc2]))
+      barplot(prop_table, beside = TRUE)
+    }
+  }
+}
+par(mfrow = c(1, 1))
+```
+
+```{r}
+
+# --- 3 Automatic Descriptive Analysis (EDA) -------------------------------
+
+# 3.1 Skim
+library(skimr)
+library(tidyverse)
+
+# Podem visualitzar un descriptiu de les dades
+skim(datos)
+
+# Visualitzem exclusivament les variables numériques
+skim(datos) %>% yank("numeric")
+
+skim(datos) %>% yank("character")
+
+# 3.2 Vis
+library(visdat)
+## Busquem per a variables numériques o categóriques si hi ha NA's
+vis_dat(datos)
+
+## Visualitzem percentatges de NA's en les variables
+vis_miss(datos)
+
+## Generem la matriu de correlacions
+datos %>% dplyr::select(where(is.numeric)) %>% vis_cor()
+
+## Podem visualitzar condicionants de les dades. En aquest cas, mirem si tenim mes de
+## 2 clases
+vis_expect(datos, ~ .x > 2)
+
+# 3.3 Inspectdf
+library(inspectdf)
+
+## Tipus de dades
+inspect_types(datos) %>% show_plot()
+
+## Utilització de la memoria
+inspect_mem(datos) %>% show_plot()
+
+## Comprovem NA's
+data_price_dummy <- datos %>%
+  dplyr::mutate(price_dummy = dplyr::if_else(money > 35, "High", "Low"))
+
+inspect_na(data_price_dummy %>% dplyr::filter(price_dummy == "High"),
+           data_price_dummy %>% dplyr::filter(price_dummy == "Low")) %>%
+  show_plot()
+
+## Comprovem la distribució de les variables
+inspect_num(datos) %>% show_plot()
+## check categorical variable distribution
+inspect_imb(datos) %>% show_plot()
+
+## check two categorical
+inspect_imb(data_price_dummy %>% dplyr::filter(price_dummy == "High"),
+            data_price_dummy %>% dplyr::filter(price_dummy == "Low")) %>%
+  show_plot() + theme(legend.position = "none")
+
+## similiar to inspect_imb, but for all levels
+inspect_cat(datos) %>% show_plot()
+
+inspect_cor(datos) %>% show_plot()
+
+# 3.4 dataReporter (antiguo dataMaid)  [Nota: el HTML lo marca eval: false]
+# library("dataReporter")
+# dataReporter::makeDataReport(datos, output = "html",
+#   file = "/Users/ramitjans/Downloads/Preprocessing/report.Rmd")
+# dataReporter::makeCodebook(data = datos,
+#   file = "/Users/ramitjans/Downloads/Preprocessing/codebook.Rmd")
+
+# 3.5 DataExplorer
+library(DataExplorer)
+plot_str(datos)
+introduce(datos)
+plot_intro(datos)
+
+plot_missing(datos)
+
+plot_bar(datos)
+plot_bar(datos, with = "money")
+plot_bar(datos, by = "cash_type")
+plot_histogram(datos)
+# Tal cual aparece en la página (puede que haya un espacio erróneo en '5 L'):
+plot_correlation(na.omit(datos), maxcat = 5 L)
+```
+
+
