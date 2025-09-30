@@ -5,3 +5,4 @@ Integrants:
 - Emma
 - Vega
 - Raquel
+- Erik 
