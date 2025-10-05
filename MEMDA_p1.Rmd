@@ -2,8 +2,24 @@
 title: "proyecto regression"
 author: "vega carmona"
 date: "2025-09-30"
-output: html_document
+output:
+  html_document: default
+  pdf_document: default
 ---
+
+```{r setup, include=FALSE}
+# Paquetes básicos que usas
+library(tidyverse)   # incluye ggplot2 y dplyr (%>%)
+library(DataExplorer)
+library(inspectdf)
+library(skimr)
+library(SmartEDA)
+library(naniar)
+library(forcats)     # utilidades para factors
+
+# Evitar el warning de xts vs dplyr::lag (si lo usas)
+options(xts.warn_dplyr_breaks_lag = FALSE)
+```
 
 ```{r}
 setwd("C:/Users/Vega Carmona/OneDrive/ESTADISTICA/QUART/MEMDA/projecte")
@@ -15,10 +31,10 @@ test <- read.csv("test.csv")
 # --- Preliminaries ---------------------------------------------------------
 
 # Conversión a factores
-datos$ID <- factor(datos$ID)
 datos$key <- factor(datos$key)
 datos$audio_mode <- factor(datos$audio_mode) # 0 = menor, 1 = mayor
 datos$time_signature <- factor(datos$time_signature)
+datos <- datos %>% select(-ID)
 
 clases <- sapply(datos, class)
 
@@ -182,7 +198,10 @@ for (varc1 in varCat) {
     }
   }
 }
+```
 
+
+```{r}
 # 2.2.3 Categorical vs. categorical — Graphics (base)
 par(mfrow = c(3, 3))
 for (varc1 in varCat) {
@@ -206,80 +225,153 @@ library(tidyverse)
 
 # Podem visualitzar un descriptiu de les dades
 skim(datos)
+```
 
+```{r}
 # Visualitzem exclusivament les variables numériques
 skim(datos) %>% yank("numeric")
+```
 
+```{r}
 skim(datos) %>% yank("character")
+```
 
+```{r}
 # 3.2 Vis
 library(visdat)
 ## Busquem per a variables numériques o categóriques si hi ha NA's
 vis_dat(datos)
+```
 
+
+```{r}
 ## Visualitzem percentatges de NA's en les variables
 vis_miss(datos)
+```
 
+```{r}
 ## Generem la matriu de correlacions
 datos %>% dplyr::select(where(is.numeric)) %>% vis_cor()
+```
 
+
+```{r}
 ## Podem visualitzar condicionants de les dades. En aquest cas, mirem si tenim mes de
 ## 2 clases
 vis_expect(datos, ~ .x > 2)
+```
 
+```{r}
 # 3.3 Inspectdf
 library(inspectdf)
 
 ## Tipus de dades
 inspect_types(datos) %>% show_plot()
+```
 
+```{r}
 ## Utilització de la memoria
 inspect_mem(datos) %>% show_plot()
+```
 
-## Comprovem NA's
+```{r}
+# Paquetes
+library(dplyr)
+library(inspectdf)
+library(rlang)
+
+# --- 1) Crear una categórica desde una numérica y comparar (High/Low) ---
+# Usamos 'song_popularity' como ejemplo con umbral 50.
+umbral <- 50
+num_target <- "song_popularity"
+
+stopifnot(num_target %in% c(
+  "liveness","loudness","danceability","song_duration_ms","audio_valence",
+  "energy","tempo","acousticness","speechiness","instrumentalness","song_popularity"
+))
+
+# Convertir a numérico por si viniera como texto
+datos[[num_target]] <- suppressWarnings(as.numeric(datos[[num_target]]))
+
 data_price_dummy <- datos %>%
-  dplyr::mutate(price_dummy = dplyr::if_else(money > 35, "High", "Low"))
+  mutate(price_dummy = if_else(.data[[num_target]] > umbral, "High", "Low") %>% factor())
 
-inspect_na(data_price_dummy %>% dplyr::filter(price_dummy == "High"),
-           data_price_dummy %>% dplyr::filter(price_dummy == "Low")) %>%
-  show_plot()
+# Comparativa de NA entre High y Low
+inspect_na(
+  data_price_dummy %>% filter(price_dummy == "High"),
+  data_price_dummy %>% filter(price_dummy == "Low")
+) %>% show_plot()
 
+```
+
+```{r}
 ## Comprovem la distribució de les variables
 inspect_num(datos) %>% show_plot()
+```
+
+```{r}
 ## check categorical variable distribution
 inspect_imb(datos) %>% show_plot()
+```
 
+```{r}
 ## check two categorical
 inspect_imb(data_price_dummy %>% dplyr::filter(price_dummy == "High"),
             data_price_dummy %>% dplyr::filter(price_dummy == "Low")) %>%
   show_plot() + theme(legend.position = "none")
+```
 
+```{r}
 ## similiar to inspect_imb, but for all levels
 inspect_cat(datos) %>% show_plot()
+```
 
+```{r}
 inspect_cor(datos) %>% show_plot()
+```
 
-# 3.4 dataReporter (antiguo dataMaid)  [Nota: el HTML lo marca eval: false]
-# library("dataReporter")
-# dataReporter::makeDataReport(datos, output = "html",
-#   file = "/Users/ramitjans/Downloads/Preprocessing/report.Rmd")
-# dataReporter::makeCodebook(data = datos,
-#   file = "/Users/ramitjans/Downloads/Preprocessing/codebook.Rmd")
-
+```{r}
 # 3.5 DataExplorer
 library(DataExplorer)
 plot_str(datos)
 introduce(datos)
-plot_intro(datos)
-
-plot_missing(datos)
-
-plot_bar(datos)
-plot_bar(datos, with = "money")
-plot_bar(datos, by = "cash_type")
-plot_histogram(datos)
-# Tal cual aparece en la página (puede que haya un espacio erróneo en '5 L'):
-plot_correlation(na.omit(datos), maxcat = 5 L)
 ```
+
+```{r}
+plot_intro(datos)
+```
+
+```{r}
+plot_missing(datos)
+```
+
+```{r}
+plot_bar(datos)
+```
+
+```{r}
+plot_histogram(datos)
+```
+
+```{r}
+library(DataExplorer)
+
+# Opción 1: omitir filas con NA
+plot_correlation(na.omit(datos), type = "all", maxcat = 5L)
+```
+
+```{r}
+library("SmartEDA")
+## Overview of the data
+ExpData(data = datos,type = 1)
+
+## structure of the data    
+ExpData(data = datos,type = 2)
+```
+
+```{r}
+SmartEDA::ExpCTable(datos,Target=NULL,margin=1,clim=10,nlim=5,round=2,bin=NULL,per=T)
+```
+
 
 
