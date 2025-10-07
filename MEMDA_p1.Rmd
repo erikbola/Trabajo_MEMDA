@@ -23,13 +23,14 @@ options(xts.warn_dplyr_breaks_lag = FALSE)
 ```
 
 ```{r}
-#setwd("C:/Users/Vega Carmona/OneDrive/ESTADISTICA/QUART/MEMDA/projecte")
-setwd("C:/Users/Usuario/OneDrive/Documentos/ESTADÍSTICA/4-1 ESTADÍSTICA/MEMDA/TRABAJO")
+# setwd("C:/Users/Vega Carmona/OneDrive/ESTADISTICA/QUART/MEMDA/projecte")
+# setwd("C:/Users/Usuario/OneDrive/Documentos/ESTADÍSTICA/4-1 ESTADÍSTICA/MEMDA/TRABAJO")
+setwd("C:/Users/raque/OneDrive/Documentos/GitHub/Trabajo_MEMDA")
 datos <- read_csv("train.csv")
 test <- read_csv("test.csv")
 ```
 
-```{r}
+```{r, warning=FALSE}
 str(datos)
 ```
 
@@ -46,8 +47,8 @@ varNum <- names(clases)[which(clases %in% c("numeric", "integer"))]
 varCat <- names(clases)[which(clases %in% c("character", "factor"))]
 ```
 
-Comprobación
 ```{r}
+# Comprobación
 str(datos)
 ```
 
@@ -56,6 +57,11 @@ str(datos)
 library(psych)
 psych::describe(datos[, varNum])
 ```
+
+
+En base a este resumen estadístico se puede afirmar que la mayoría de las canciones no son en vivo, dado que el promedio de la variable $liveness$ es bastante bajo. Respecto a el volumen de las canciones, teniendo en cuenta que $loudness$ es una característica que oscila entre -36.73dB	y 1.34dB, su valor medio parece indicar que es relativamente alto. La media de $danceability$ apunta que las canciones son bastante bailables, y el valor esperado de $audio_valence$ muestra que las canciones tienden a tener emociones más alegres y positivas, ya que es ligeramente superior a 0,5. Asimismo, haciendo referencia a cómo de energéticas o animadas son dichas canciones, $energy$ señala que, en promedio, puede decirse que lo son bastante. En cuanto al grado acústico, observando que el valor medio es bajo, se podría deducir que mayoritariamente las canciones son producidas electrónicamente. Por último, se podría añadir que gran parte de las canciones no son habladas, pues la variable $speechiness$ tiene un promedio bajo.
+Destaca la variabilidad del nivel de popularidad ($song_popularity$), con canciones desde poco conocidas hasta muy populares.
+
 
 ```{r}
 # --- 2.1.1 Numerical: Graphics (base) -------------------------------------
@@ -69,6 +75,8 @@ par(mfrow = c(1, 1))
 
 
 # --- 2.1.1 Numerical: Graphics (ggplot2 + patchwork) ----------------------
+
+```{r, eval=FALSE}
 library(ggplot2)
 library(patchwork)
 
@@ -87,10 +95,16 @@ for (var in varNum) {
 
   plots <- append(plots, list(histo, boxp))
 }
+```
+
 
 # Combinar en un grid automático con 2 columnas
+
+```{r, eval=FALSE, include=FALSE}
 final_plot <- Reduce(`+`, plots) + plot_layout(ncol = 2)
 final_plot
+```
+
 
 ```{r}
 # --- 2.1.2 Categorical: Description ---------------------------------------
@@ -106,14 +120,50 @@ for (var in varCat) {
 }
 ```
 
+Las frecuencias absolutas de las variables categóricas, muestran, en general, una distribución equitativa de las modalidades. Sin embargo, la variable $time_signature$ posee un mayor número de casos en la cuarta categoría.
+
 ```{r}
 # --- 2.1.2 Categorical: Graphics (base) -----------------------------------
+# Configurar la ventana gráfica para mostrar 2 filas y 3 columnas
 par(mfrow = c(2, 3))
+
+# Crear gráficos de barras con títulos personalizados
 for (var in varCat) {
-  barplot(table(datos[, var]))
+  if (var == "time_signature") {
+    barplot(table(datos[, var]),
+            main = "Distribución de Time Signature",
+            col = "skyblue")
+  } else if (var == "key") {
+    barplot(table(datos[, var]),
+            main = "Distribución de Key",
+            col = "lightgreen")
+  } else if (var == "audio_mode") {
+    barplot(table(datos[, var]),
+            main = "Distribución de Audio Mode",
+            col = "lightcoral")
+  } else {
+    barplot(table(datos[, var]),
+            main = var,  # título genérico si hay más variables
+            col = "gray80")
+  }
 }
+
+# Restaurar la configuración original
 par(mfrow = c(1, 1))
 ```
+
+  - **time_signature**:
+  
+la categoría 4 es la más frecuente, con casi 8000 canciones. Esto corresponde al compás 4/4, el más común en música popular. El resto de niveles, 0, 1, 3 y 5 son mucho menos frecuentes, lo que indica que compases alternativos o inusuales son raros en esta colección de canciones.
+
+  - **key**:
+  
+La distribución es bastante uniforme, con cada tonalidad apareciendo entre 1000 y 2000 veces.
+No hay una tonalidad claramente dominante, lo que sugiere diversidad armónica en el conjunto de datos.
+
+  - **audio_mode**:
+  
+Predominan las canciones en modo mayor, lo que puede reflejar una tendencia hacia música más optimista o comercial.
 
 ```{r}
 # --- 2.1.2 Categorical: Graphics (ggplot2 + gridExtra) --------------------
@@ -135,7 +185,7 @@ for (var in varCat) {
   i <- i + 1
 }
 # Mostrar todos los gráficos en un grid (ejemplo con 2 columnas)
-grid.arrange(grobs = plots, ncol = 2)
+# grid.arrange(grobs = plots, ncol = 2)
 
 ```
 
@@ -147,13 +197,15 @@ grid.arrange(grobs = plots, ncol = 2)
 cor(na.omit(datos[, varNum]))
 ```
 
+Las correlaciones con valores más extremos se encuentran entre las variables **acousticness** y **loudness**, **instrumentalness** y **loudness**, **loudness** y **energy**, **acousticness** y **energy**. 
+
 ```{r}
 # 2.2.1 Numerical vs. numerical — Graphics (base / PerformanceAnalytics)
 library(PerformanceAnalytics)
 chart.Correlation(as.matrix(datos[, varNum]), histogram = TRUE, pch = 12)
 ```
 
-```{r}
+```{r, include=FALSE, eval=FALSE}
 # 2.2.1 Numerical vs. numerical — Graphics (ggplot2 / ggcorrplot)
 library(ggcorrplot)
 corr <- round(cor(datos[, varNum]), 1)
@@ -252,17 +304,21 @@ library(visdat)
 vis_dat(datos)
 ```
 
+Este gráfico representa que la mayoría de las variables son numéricas, con menos cantidad de variables categóricas. También se osberva que hay un gran número de valores missings en los dos tipos de variables. 
 
 ```{r}
 ## Visualitzem percentatges de NA's en les variables
 vis_miss(datos)
 ```
 
+Concretamente, hay un total de 26% de valores perdidos. 
+
 ```{r}
 ## Generem la matriu de correlacions
 datos %>% dplyr::select(where(is.numeric)) %>% vis_cor()
 ```
 
+Mediante la visualización de este gráfico de correlaciones, se refuerzan las relaciones lineales entre los diferentes pares de variables. 
 
 ```{r}
 ## Podem visualitzar condicionants de les dades. En aquest cas, mirem si tenim mes de
@@ -277,6 +333,8 @@ library(inspectdf)
 ## Tipus de dades
 inspect_types(datos) %>% show_plot()
 ```
+
+La base de datos contiene 3 variables factor, y 11 cuantitativas. 
 
 ```{r}
 ## Utilització de la memoria
@@ -335,7 +393,7 @@ inspect_imb(data_price_dummy %>% dplyr::filter(price_dummy == "High"),
 inspect_cat(datos) %>% show_plot()
 ```
 
-```{r}
+```{r, eval=FALSE, include=FALSE}
 inspect_cor(datos) %>% show_plot()
 ```
 
@@ -354,13 +412,20 @@ plot_intro(datos)
 plot_missing(datos)
 ```
 
+Tal y como se muestra en esta ilustración, se ha asignado un 30% de valores missings en cada variable. 
+
 ```{r}
 plot_bar(datos)
 ```
 
+Cabe destacar que la variable $key$ posee una gran cantidad de valores faltantes, algo que deberá de tratarse en el preprocesamiento de los datos para evitar el sesgo y que este hecho pueda cambiar significativamente los resultados. Asimismo, $time_signature$ también presenta bastantes valores perdidos.  
+
 ```{r}
 plot_histogram(datos)
 ```
+
+Muchas de las distribuciones de las variables parecen tener asimetría, bien sea por la izquierda o por la derecha. Esto induce a pensar que variables como $acousticness$, $instrumentalness$,  $speechiness$ o $loudness$ tienden a tomar valores más extremos. 
+
 
 ```{r}
 library(DataExplorer)
@@ -385,6 +450,7 @@ SmartEDA::ExpCTable(datos,Target=NULL,margin=1,clim=10,nlim=5,round=2,bin=NULL,p
 # 3. Outliers treatment
 
 ## 4.1. Tratamiento univariante con boxplots
+
 ```{r}
 outliers_detectados <- list()
 
@@ -469,5 +535,5 @@ datos_limpio <- datos[-idx_outliers, ]
 
 
 
-#Variables a analizar 
+# Variables a analizar 
 
