@@ -15,31 +15,40 @@ library(inspectdf)
 library(skimr)
 library(SmartEDA)
 library(naniar)
-library(forcats)     # utilidades para factors
+library(forcats)# utilidades para factors
+library(readr)
 
 # Evitar el warning de xts vs dplyr::lag (si lo usas)
 options(xts.warn_dplyr_breaks_lag = FALSE)
 ```
 
 ```{r}
-setwd("C:/Users/Vega Carmona/OneDrive/ESTADISTICA/QUART/MEMDA/projecte")
-datos <- read.csv("train.csv")
-test <- read.csv("test.csv")
+#setwd("C:/Users/Vega Carmona/OneDrive/ESTADISTICA/QUART/MEMDA/projecte")
+setwd("C:/Users/Usuario/OneDrive/Documentos/ESTADÍSTICA/4-1 ESTADÍSTICA/MEMDA/TRABAJO")
+datos <- read_csv("train.csv")
+test <- read_csv("test.csv")
+```
+
+```{r}
+str(datos)
 ```
 
 ```{r}
 # --- Preliminaries ---------------------------------------------------------
-
 # Conversión a factores
 datos$key <- factor(datos$key)
 datos$audio_mode <- factor(datos$audio_mode) # 0 = menor, 1 = mayor
 datos$time_signature <- factor(datos$time_signature)
-datos <- datos %>% select(-ID)
 
 clases <- sapply(datos, class)
 
 varNum <- names(clases)[which(clases %in% c("numeric", "integer"))]
 varCat <- names(clases)[which(clases %in% c("character", "factor"))]
+```
+
+Comprobación
+```{r}
+str(datos)
 ```
 
 ```{r}
@@ -91,9 +100,9 @@ for (var in varCat) {
   m <- match(tablaAbs$Var1, tablaFreq$Var1)
   tablaAbs[, "FreqRel"] <- tablaFreq[m, "Freq"]
   colnames(tablaAbs) <- c("Categoria", "FreqAbs", "FreqRel")
-  cat("===============", var, "===================================\n")
+  cat("===============", var, "===================================/n")
   print(tablaAbs)
-  cat("==================================================\n")
+  cat("==================================================/n")
 }
 ```
 
@@ -193,7 +202,7 @@ for (varc1 in varCat) {
   for (varc2 in varCat) {
     if (varc1 != varc2) {
       prop_table <- prop.table(table(datos[, varc1], datos[, varc2]))
-      cat("=============", varc1, " vs. ", varc2, "=========================\n")
+      cat("=============", varc1, " vs. ", varc2, "=========================/n")
       print(prop_table)
     }
   }
@@ -373,5 +382,92 @@ ExpData(data = datos,type = 2)
 SmartEDA::ExpCTable(datos,Target=NULL,margin=1,clim=10,nlim=5,round=2,bin=NULL,per=T)
 ```
 
+# 3. Outliers treatment
 
+## 4.1. Tratamiento univariante con boxplots
+```{r}
+outliers_detectados <- list()
+
+# Variables a analizar 
+vars<-c("audio_valence","danceability","energy","log_acousticness",
+        "log_liveness","song_duration_ms","tempo")
+
+# Iteramos sobre las variables
+for (i in vars){
+  #Extraemos valores outliers usando IQR
+  q1 = quantile(datos[[i]], 0.25, na.rm=TRUE)
+  q3 = quantile(datos[[i]], 0.75, na.rm=TRUE)
+  iqr = q3-q1
+  lim_inf = q1-1.5*iqr
+  lim_sup = q3+1.5*iqr
+  
+  out_ind <- which(datos[[i]] < lim_inf | datos[[i]] > lim_sup)
+  datos_outliers <- datos[out_ind,]
+  
+  if (length(out_ind) > 0) {
+
+    extremos <- datos_outliers %>%
+      mutate(distancia_mediana = abs(.data[[i]] - median(datos[[i]], na.rm = TRUE))) %>%
+      arrange(desc(distancia_mediana)) %>%
+      dplyr::select(-distancia_mediana)
+
+    extremos_top10 <- head(extremos, 10)
+    outliers_detectados[[i]] <- extremos_top10
+
+    # Mostramos info resumen
+    cat(paste0("\n\nVariable: ", i,
+               "\n ·Outliers detectados: ", nrow(datos_outliers),
+               "\n ·10 Outliers más extremos: ", paste(extremos_top10[[i]], collapse = ", ")))
+
+    # Generamos boxplot con ggplot2
+    p <- ggplot(datos, aes(y = .data[[i]])) +
+      geom_boxplot(fill = "salmon", outlier.color = "black", outlier.shape = 21, alpha = 0.6) +
+      labs(title = paste("Boxplot de", i), y = i) +
+      theme_minimal() +
+      theme(plot.title = element_text(size = 14, face = "bold"))
+
+    print(p)
+
+  } else {
+    message(paste("Variable:", i, "- Sin outliers detectados"))
+  }
+}
+
+```
+
+## 4.2 Tratamiento multivariante con distancias  de Gower
+```{r}
+library(gower)
+library(dplyr)
+library(ggplot2)
+library(tibble)
+
+X <- vars_mixtas  # tu data.frame ya seleccionado
+k <- 10           # vecinos (ajústalo 5–20)
+
+# k-NN sobre el propio conjunto (primera columna suele ser el “self” con distancia 0)
+topn <- gower_topn(X, X, n = nrow(X), k = k + 1)
+
+# media de distancias a los k vecinos (excluyendo el self)
+knn_score <- rowMeans(topn$distance[, -1, drop = FALSE])
+
+# umbral y outliers (p.ej., top 1%)
+umbral <- quantile(knn_score, 0.99)
+idx_outliers <- which(knn_score > umbral)
+
+# gráfico rápido
+tibble(ID = seq_along(knn_score), score = knn_score) |>
+  ggplot(aes(ID, score)) +
+  geom_line(color = "steelblue") +
+  geom_hline(yintercept = umbral, linetype = "dashed", color = "red") +
+  labs(title = "Rareza (media kNN con Gower)", y = "Distancia media kNN")
+
+# filtrar
+datos_limpio <- datos[-idx_outliers, ]
+
+```
+
+
+
+#Variables a analizar 
 
