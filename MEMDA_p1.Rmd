@@ -500,9 +500,14 @@ for (i in vars){
 }
 
 ```
+El análisis de valores atípicos mediante el criterio del rango intercuartílico (IQR) muestra diferencias entre las variables estudiadas.
+
+La variable **audio_valence** no presenta valores atípicos. En cambio, **danceability** muestra 49 valores atípicos situados en la parte inferior. De manera similar, **energy** presenta 70 valores atípicos también en el inferior. **Song_duration_ms**, es la variable con más valores atípicos (436), asociada principalmente a duraciones muy superiores a la mitjana. Y finalmente, **tempo** contiene 44 valores extremos, mayoritariamente por encima de los 200 BPM.
 
 ## 4.2 Tratamiento multivariante con distancias  de Gower
 ```{r}
+
+#install.packages("gower")
 library(gower)
 library(dplyr)
 library(ggplot2)
