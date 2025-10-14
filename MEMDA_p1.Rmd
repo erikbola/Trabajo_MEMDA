@@ -126,6 +126,7 @@ for (var in varNum) {
     ggtitle(paste("Boxplot de", var))
 
   plots <- append(plots, list(histo, boxp))
+  print(plots)
 }
 ```
 
@@ -215,7 +216,6 @@ for (var in varCat) {
 }
 # Mostrar todos los gráficos en un grid (ejemplo con 2 columnas)
 # grid.arrange(grobs = plots, ncol = 2)
-
 ```
 
 ## 2.2. Bivariant Analysis
@@ -861,13 +861,100 @@ library(plotly)
 ```
 ### 4.2.1. Caso general
 
+Como contamos con una matriz de covarianza singular con colinealidad fuerte entre algunas de nuestras variables, debemos aplicar fallback a PCA en vez de la forma común dada en la teoria:
 ```{r}
 library(mvoutlier)
-datos2<-datos
-Y<-as.matrix(datos2)
-distances<-dd.plot(Y,quan=1/2, alpha=0.025)
+
+# Subset y saneo de columnas 
+X <- datos[, varNum, drop = FALSE]
+
+# Asegurar numéricas
+X <- X[, sapply(X, is.numeric), drop = FALSE]
+
+# Quitar columnas con varianza 0 o todo NA
+sd_cols <- sapply(X, function(x) sd(x, na.rm = TRUE))
+X <- X[, sd_cols > 0 & !is.na(sd_cols), drop = FALSE]
+
+# Quitar colinealidad casi perfecta (|r| >= 0.999)
+if (ncol(X) > 1) {
+  repeat {
+    C <- suppressWarnings(cor(X, use = "pairwise.complete.obs"))
+    up <- which(abs(C) >= 0.999 & upper.tri(C), arr.ind = TRUE)
+    if (!nrow(up)) break
+    # elimina la de menor varianza del par
+    to_drop <- unique(colnames(X)[apply(up, 1, function(idx){
+      v1 <- var(X[[idx[1]]], na.rm = TRUE)
+      v2 <- var(X[[idx[2]]], na.rm = TRUE)
+      if (v1 <= v2) idx[1] else idx[2]
+    })])
+    X <- X[, setdiff(colnames(X), to_drop), drop = FALSE]
+  }
+}
+
+# Filas completas
+Xc <- X[complete.cases(X), , drop = FALSE]
+
+# Garantizar n > p
+if (nrow(Xc) <= ncol(Xc)) {
+  ord <- order(apply(Xc, 2, var, na.rm = TRUE), decreasing = TRUE)
+  p_new <- max(1, nrow(Xc) - 1)
+  Xc <- Xc[, ord[seq_len(p_new)], drop = FALSE]
+}
+
+##  DD-Plot con fallback robusto
+dd_with_fallback <- function(M, quan = 1/2, alpha = 0.025) {
+  M <- as.matrix(M)
+  tryCatch(
+    dd.plot(M, quan = quan, alpha = alpha),
+    error = function(e) {
+      message("Covarianza singular: hago fallback a PCA (scores). Detalle: ", e$message)
+      pcs <- prcomp(M, center = TRUE, scale. = TRUE)
+      # nº de componentes: hasta 95% var o n-1, lo que ocurra antes
+      var_exp <- cumsum(pcs$sdev^2) / sum(pcs$sdev^2)
+      k <- min(which(var_exp >= 0.95))
+      k <- min(k, nrow(M) - 1, ncol(M))
+      dd.plot(pcs$x[, seq_len(k), drop = FALSE], quan = quan, alpha = alpha)
+    }
+  )
+}
+
+distances <- dd_with_fallback(Xc, quan = 1/2, alpha = 0.025)
+
 ```
 
+Las observaciones distribuidas en la rectangulo inferior izquierdo del dd plot són aquellas observaciónes con valores bajos en ambas distancias (no outliers).
+
+Los que se encuentran en la parte superior izquierda, al contar con un valor de distancia robusta alto, són outliers robustos con una fuerte influencia.
+
+Todos aquellos que se encuentran en el lado derecho de la linea vertica central són aquellos llamados "leverage points", observaciones que influyen mucho en la covarianza clásica.
+
+Ahora, obtenemos los índices de aquellos puntos considerados outliers según las anteriores características.
+```{r}
+outliers<-distances$outliers
+indOut<-which(outliers==TRUE)
+indOut # 122 outliers
+```
+
+Visualizamos todos los outliers detectados como true
+```{r}
+library(MVN)
+par(mfrow = c(1, 1))
+
+# Seleccionar solo las variables numéricas
+datos_num <- datos[, varNum, drop = FALSE]
+
+# Prueba de normalidad y detección de outliers multivariantes
+mvnoutliers <- mvn(
+  data = datos_num,
+  mvnTest = "royston",
+  univariateTest = "AD",
+  multivariateOutlierMethod = "adj",
+  showNewData = TRUE,
+  showOutliers = TRUE,
+  showPlot = TRUE
+)
+
+```
 
 
 
