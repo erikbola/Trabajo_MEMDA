@@ -81,12 +81,30 @@ Por último, se podría añadir que gran parte de las canciones no son habladas,
 
 Graphics (base)
 ```{r}
-par(mfrow = c(2, 4))
-for (var in varNum) {
-  hist(datos[, var], main = paste0("Histograma variable ", var))
-  boxplot(datos[, var], main = paste0("Boxplot variable ", var))
+for (var in varNum[-1]) {
+  # Acceder a la columna por nombre y asegurarse de que es numérica
+  column_data <- as.numeric(datos[[var]])
+  
+  # Comprobar si la columna es numérica
+  if (is.numeric(column_data)) {
+    # Eliminar NAs
+    column_data <- na.omit(column_data)
+    
+    # Comprobar si quedan datos después de eliminar NAs
+    if (length(column_data) > 0) {
+      hist(column_data, main = paste0("Histograma variable ", var))
+      boxplot(column_data, main = paste0("Boxplot variable ", var))
+    } else {
+      warning(paste("La variable", var, "está vacía o tiene solo NA y será ignorada"))
+    }
+  } else {
+    warning(paste("La variable", var, "no es numérica y será ignorada"))
+  }
 }
+
 par(mfrow = c(1, 1))
+
+
 ```
 
 Graphics (ggplot2 + patchwork)
