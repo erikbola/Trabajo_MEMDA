@@ -38,7 +38,6 @@ test <- read_csv("test.csv")
 ```{r, warning=FALSE}
 str(datos)
 ```
-
 Preliminares
 ```{r}
 # Conversión a factores
@@ -49,6 +48,7 @@ datos$time_signature <- factor(datos$time_signature)
 clases <- sapply(datos, class)
 
 varNum <- names(clases)[which(clases %in% c("numeric", "integer"))]
+varNum<-varNum[!varNum %in% c("ID","song_popularity")]
 varCat <- names(clases)[which(clases %in% c("character", "factor"))]
 ```
 
@@ -867,7 +867,6 @@ library(mvoutlier)
 
 # Subset y saneo de columnas 
 X <- datos[, varNum, drop = FALSE]
-
 # Asegurar numéricas
 X <- X[, sapply(X, is.numeric), drop = FALSE]
 
@@ -932,29 +931,77 @@ Ahora, obtenemos los índices de aquellos puntos considerados outliers según la
 ```{r}
 outliers<-distances$outliers
 indOut<-which(outliers==TRUE)
-indOut # 122 outliers
+indOut # 141 outliers
 ```
 
 Visualizamos todos los outliers detectados como true
 ```{r}
-library(MVN)
-par(mfrow = c(1, 1))
-
-# Seleccionar solo las variables numéricas
-datos_num <- datos[, varNum, drop = FALSE]
-
-# Prueba de normalidad y detección de outliers multivariantes
-mvnoutliers <- mvn(
-  data = datos_num,
-  mvnTest = "royston",
-  univariateTest = "AD",
-  multivariateOutlierMethod = "adj",
-  showNewData = TRUE,
-  showOutliers = TRUE,
-  showPlot = TRUE
-)
-
+head(distances$md.cla)
 ```
+```{r}
+head(distances$md.rob)
+```
+
+```{r}
+head(outliers)
+```
+```{r}
+table(outliers)
+```
+```{r}
+distances_df<-as.data.frame(distances)
+distances_df<-distances_df[order(-distances_df$md.rob),]
+head(distances_df,10)
+```
+```{r}
+p <- 10   
+alpha <- 0.025
+umbral2 <- qchisq(1 - alpha, df = p) # sobre D^2
+umbral  <- sqrt(umbral2)             # sobre D (md.rob)
+
+plot(distances_df$md.rob, 
+     type = "h", 
+     ylab = "Distancia de Mahalanobis robusta", 
+     xlab = "Índice de observación",
+     main = sprintf("Outliers multivariantes (p=%d)", p))
+abline(h = umbral, col = "red", lwd = 2, lty = 2)
+```
+
+PROBLEMA: Con este metodo solo me deja calcular las distancias de observaciones sin NA's (376). El resto las excluye y solo puedo estudiar valores anomalos dentro de este subconjunto muy pequeño excluyendo las otras 12mil y pico obs.
+
+### 4.2.2. PCA
+
+Hay metodos basados en correlaciones que nos permiten detectar outliers. De momento no los ejecutaremos pero que sepamos que exite esa posibilidad en caso de encontrar dificultades si concluimos que nuestras variables regressoras presentan problemas de multicol·linealidad. Hasta ahora no lo parece.
+
+### 4.2.3. Distancia de Mahalanobis 
+
+```{r}
+distancia_mahalanobis <- mahalanobis(datos[,varNum], colMeans(datos[,varNum]), cov(datos[,varNum]))
+summary(distancia_mahalanobis)
+```
+Como vemos tenemos problemas de calculo con la distancia de mahalanobis debido a la cantidad de NA's que tenemos en nuestra bbdd. Haremos este metodo más adelante cuando Dante nos guie en si usar algun tipo de metodo de imputacion de NA's previo para calcular estas distancias.
+
+### 4.2.4. Regresió Lineal i residus 
+
+Un punto con un residuo grande puede considerarse un valor anomalo.
+
+### 4.2.5. Distancia de Cook
+
+Podemos calcular las distancias de Cook para discriminar como outliers aquellas observaciones que cuenten con un valor superior a 1.
+
+### 4.2.6. K-Nearest Neighbors (KNN) Outlier Score
+
+```{r}
+library(adamethods)
+res_knn<-adamethods::knno(datos[,varNum], k=1)
+```
+
+
+
+
+
+
+
 
 
 
