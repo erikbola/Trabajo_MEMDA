@@ -6,7 +6,7 @@ output:
   html_document: default
   pdf_document: default
 ---
-
+# 0. Paquetes y Datos
 ```{r setup, include=FALSE}
 # Paquetes básicos que usas
 library(tidyverse)   # incluye ggplot2 y dplyr (%>%)
@@ -17,25 +17,26 @@ library(SmartEDA)
 library(naniar)
 library(forcats)# utilidades para factors
 library(readr)
+library(dlookr)# para diagnose()
+library(EnvStats) # IQR
+library(dplyr)
+library(purrr)
 
 # Evitar el warning de xts vs dplyr::lag (si lo usas)
 options(xts.warn_dplyr_breaks_lag = FALSE)
 ```
 
 ```{r}
-# setwd("C:/Users/Vega Carmona/OneDrive/ESTADISTICA/QUART/MEMDA/projecte")
-# setwd("C:/Users/Usuario/OneDrive/Documentos/ESTADÍSTICA/4-1 ESTADÍSTICA/MEMDA/TRABAJO")
-setwd("C:/Users/raque/OneDrive/Documentos/GitHub/Trabajo_MEMDA")
 datos <- read_csv("train.csv")
 test <- read_csv("test.csv")
 ```
 
+# 1. Descripción del problema
 ```{r, warning=FALSE}
 str(datos)
 ```
-
+Preliminares
 ```{r}
-# --- Preliminaries ---------------------------------------------------------
 # Conversión a factores
 datos$key <- factor(datos$key)
 datos$audio_mode <- factor(datos$audio_mode) # 0 = menor, 1 = mayor
@@ -44,38 +45,66 @@ datos$time_signature <- factor(datos$time_signature)
 clases <- sapply(datos, class)
 
 varNum <- names(clases)[which(clases %in% c("numeric", "integer"))]
+varNum<-varNum[!varNum %in% c("ID","song_popularity")]
 varCat <- names(clases)[which(clases %in% c("character", "factor"))]
 ```
 
+Comprobación
 ```{r}
-# Comprobación
 str(datos)
 ```
 
+# 2. Análisis Exploratorio
+
+## 2.1. Univariant Analysis
+
+### 2.1.1. Numerical
+
+Descrpition
 ```{r}
-# --- 2.1.1 Numerical: Description -----------------------------------------
 library(psych)
 psych::describe(datos[, varNum])
 ```
 
+En base a este resumen estadístico se puede afirmar que la mayoría de las canciones no son en vivo, dado que el promedio de la variable $liveness$ es bastante bajo. Respecto a el volumen de las canciones, teniendo en cuenta que $loudness$ es una característica que oscila entre -36.73dB y 1.34dB, su valor medio parece indicar que es relativamente alto. 
 
-En base a este resumen estadístico se puede afirmar que la mayoría de las canciones no son en vivo, dado que el promedio de la variable $liveness$ es bastante bajo. Respecto a el volumen de las canciones, teniendo en cuenta que $loudness$ es una característica que oscila entre -36.73dB	y 1.34dB, su valor medio parece indicar que es relativamente alto. La media de $danceability$ apunta que las canciones son bastante bailables, y el valor esperado de $audio_valence$ muestra que las canciones tienden a tener emociones más alegres y positivas, ya que es ligeramente superior a 0,5. Asimismo, haciendo referencia a cómo de energéticas o animadas son dichas canciones, $energy$ señala que, en promedio, puede decirse que lo son bastante. En cuanto al grado acústico, observando que el valor medio es bajo, se podría deducir que mayoritariamente las canciones son producidas electrónicamente. Por último, se podría añadir que gran parte de las canciones no son habladas, pues la variable $speechiness$ tiene un promedio bajo.
-Destaca la variabilidad del nivel de popularidad ($song_popularity$), con canciones desde poco conocidas hasta muy populares.
+La media de $danceability$ apunta que las canciones son bastante bailables, y el valor esperado de $audio_valence$ muestra que las canciones tienden a tener emociones más alegres y positivas, ya que es ligeramente superior a 0,5. 
 
+Asimismo, haciendo referencia a cómo de energéticas o animadas son dichas canciones, $energy$ señala que, en promedio, puede decirse que lo son bastante. 
 
+En cuanto al grado acústico, observando que el valor medio es bajo, se podría deducir que mayoritariamente las canciones son producidas electrónicamente. 
+
+Por último, se podría añadir que gran parte de las canciones no son habladas, pues la variable $speechiness$ tiene un promedio bajo. Destaca la variabilidad del nivel de popularidad ($song_popularity$), con canciones desde poco conocidas hasta muy populares.
+
+Graphics (base)
 ```{r}
-# --- 2.1.1 Numerical: Graphics (base) -------------------------------------
-par(mfrow = c(2, 4))
-for (var in varNum) {
-  hist(datos[, var], main = paste0("Histograma variable ", var))
-  boxplot(datos[, var], main = paste0("Boxplot variable ", var))
+for (var in varNum[-1]) {
+  # Acceder a la columna por nombre y asegurarse de que es numérica
+  column_data <- as.numeric(datos[[var]])
+  
+  # Comprobar si la columna es numérica
+  if (is.numeric(column_data)) {
+    # Eliminar NAs
+    column_data <- na.omit(column_data)
+    
+    # Comprobar si quedan datos después de eliminar NAs
+    if (length(column_data) > 0) {
+      hist(column_data, main = paste0("Histograma variable ", var))
+      boxplot(column_data, main = paste0("Boxplot variable ", var))
+    } else {
+      warning(paste("La variable", var, "está vacía o tiene solo NA y será ignorada"))
+    }
+  } else {
+    warning(paste("La variable", var, "no es numérica y será ignorada"))
+  }
 }
+
 par(mfrow = c(1, 1))
+
+
 ```
 
-
-# --- 2.1.1 Numerical: Graphics (ggplot2 + patchwork) ----------------------
-
+Graphics (ggplot2 + patchwork)
 ```{r, eval=FALSE}
 library(ggplot2)
 library(patchwork)
@@ -94,20 +123,20 @@ for (var in varNum) {
     ggtitle(paste("Boxplot de", var))
 
   plots <- append(plots, list(histo, boxp))
+  print(plots)
 }
 ```
 
-
-# Combinar en un grid automático con 2 columnas
-
+Combinar en un grid automático con 2 columnas
 ```{r, eval=FALSE, include=FALSE}
 final_plot <- Reduce(`+`, plots) + plot_layout(ncol = 2)
 final_plot
 ```
 
+### 2.1.2. Categorical
 
+Description
 ```{r}
-# --- 2.1.2 Categorical: Description ---------------------------------------
 for (var in varCat) {
   tablaAbs <- data.frame(table(datos[, var]))
   tablaFreq <- data.frame(table(datos[, var]) / sum(table(datos[, var])))
@@ -119,11 +148,10 @@ for (var in varCat) {
   cat("==================================================/n")
 }
 ```
-
 Las frecuencias absolutas de las variables categóricas, muestran, en general, una distribución equitativa de las modalidades. Sin embargo, la variable $time_signature$ posee un mayor número de casos en la cuarta categoría.
 
+Graphics (base)
 ```{r}
-# --- 2.1.2 Categorical: Graphics (base) -----------------------------------
 # Configurar la ventana gráfica para mostrar 2 filas y 3 columnas
 par(mfrow = c(2, 3))
 
@@ -152,21 +180,20 @@ for (var in varCat) {
 par(mfrow = c(1, 1))
 ```
 
-  - **time_signature**:
-  
+-   **time_signature**:
+
 la categoría 4 es la más frecuente, con casi 8000 canciones. Esto corresponde al compás 4/4, el más común en música popular. El resto de niveles, 0, 1, 3 y 5 son mucho menos frecuentes, lo que indica que compases alternativos o inusuales son raros en esta colección de canciones.
 
-  - **key**:
-  
-La distribución es bastante uniforme, con cada tonalidad apareciendo entre 1000 y 2000 veces.
-No hay una tonalidad claramente dominante, lo que sugiere diversidad armónica en el conjunto de datos.
+-   **key**:
 
-  - **audio_mode**:
-  
+La distribución es bastante uniforme, con cada tonalidad apareciendo entre 1000 y 2000 veces. No hay una tonalidad claramente dominante, lo que sugiere diversidad armónica en el conjunto de datos.
+
+-   **audio_mode**:
+
 Predominan las canciones en modo mayor, lo que puede reflejar una tendencia hacia música más optimista o comercial.
 
+Graphics (ggplot2 + gridExtra)
 ```{r}
-# --- 2.1.2 Categorical: Graphics (ggplot2 + gridExtra) --------------------
 library(gridExtra)
 
 plots <- list()  # lista vacía
@@ -186,34 +213,41 @@ for (var in varCat) {
 }
 # Mostrar todos los gráficos en un grid (ejemplo con 2 columnas)
 # grid.arrange(grobs = plots, ncol = 2)
-
 ```
 
+## 2.2. Bivariant Analysis
+
+#### 2.2.1 Numerical vs. numerical
+
+Description
 
 ```{r}
-# --- 2.2 Bivariant analysis -----------------------------------------------
-
-# 2.2.1 Numerical vs. numerical — Description
 cor(na.omit(datos[, varNum]))
 ```
 
-Las correlaciones con valores más extremos se encuentran entre las variables **acousticness** y **loudness**, **instrumentalness** y **loudness**, **loudness** y **energy**, **acousticness** y **energy**. 
+Las correlaciones con valores más extremos se encuentran entre las variables **acousticness** y **loudness**, **instrumentalness** y **loudness**, **loudness** y **energy**, **acousticness** y **energy**.
+
+Graphics (base / PerformanceAnalytics)
 
 ```{r}
-# 2.2.1 Numerical vs. numerical — Graphics (base / PerformanceAnalytics)
 library(PerformanceAnalytics)
 chart.Correlation(as.matrix(datos[, varNum]), histogram = TRUE, pch = 12)
 ```
 
+Graphics (ggplot2 / ggcorrplot)
+
 ```{r, include=FALSE, eval=FALSE}
-# 2.2.1 Numerical vs. numerical — Graphics (ggplot2 / ggcorrplot)
+#install.packages("ggcorrplot")
 library(ggcorrplot)
 corr <- round(cor(datos[, varNum]), 1)
 ggcorrplot(corr, lab = TRUE)
 ```
 
+#### 2.2.2 Numerical vs. categorical
+
+Description
+
 ```{r}
-# 2.2.2 Numerical vs. categorical — Description
 for (varN in varNum) {
   for (varC in varCat) {
    print(psych::describeBy(datos[, varN], group = datos[, varC]))
@@ -221,8 +255,9 @@ for (varN in varNum) {
 }
 ```
 
+Graphics (ggplot2)
+
 ```{r}
-# 2.2.2 Numerical vs. categorical — Graphics (ggplot2)
 library(ggplot2)
 library(gridExtra)
 
@@ -248,39 +283,55 @@ for (varC in varCat) {
 grid.arrange(grobs = plots, ncol = 2)
 ```
 
+#### 2.2.3 Categorical vs. categorical
+
+Description
+
 ```{r}
-# 2.2.3 Categorical vs. categorical — Description
 for (varc1 in varCat) {
   for (varc2 in varCat) {
     if (varc1 != varc2) {
-      prop_table <- prop.table(table(datos[, varc1], datos[, varc2]))
-      cat("=============", varc1, " vs. ", varc2, "=========================/n")
+      prop_table <- prop.table(table(datos[[varc1]], datos[[varc2]]))
+      cat("=============", varc1, " vs. ", varc2, "=========================\n")
       print(prop_table)
     }
   }
 }
+
 ```
 
+Graphics (base)
 
 ```{r}
-# 2.2.3 Categorical vs. categorical — Graphics (base)
 par(mfrow = c(3, 3))
+par(mar = c(3, 3, 3, 1))  
+
 for (varc1 in varCat) {
   for (varc2 in varCat) {
     if (varc1 != varc2) {
-      prop_table <- prop.table(table(datos[, varc1], datos[, varc2]))
-      barplot(prop_table, beside = TRUE)
+      tab <- table(datos[[varc1]], datos[[varc2]], useNA = "no")
+      prop_tab <- prop.table(tab, margin = 2)
+
+      barplot(prop_tab,
+              beside = TRUE,
+              ylim = c(0, 1),
+              main  = paste(varc1, "vs", varc2),
+              xlab  = varc2,
+              ylab  = paste("Proporción dentro de", varc2))
+      legend("topright", legend = rownames(prop_tab), cex = 0.7, bty = "n")
     }
   }
 }
+
 par(mfrow = c(1, 1))
+
 ```
 
+# 3. EDA (Automatic Descriptive Analysis)
+
+## 3.1. Skim
+
 ```{r}
-
-# --- 3 Automatic Descriptive Analysis (EDA) -------------------------------
-
-# 3.1 Skim
 library(skimr)
 library(tidyverse)
 
@@ -297,28 +348,29 @@ skim(datos) %>% yank("numeric")
 skim(datos) %>% yank("character")
 ```
 
+## 3.2 Vis
+
 ```{r}
-# 3.2 Vis
 library(visdat)
 ## Busquem per a variables numériques o categóriques si hi ha NA's
 vis_dat(datos)
 ```
 
-Este gráfico representa que la mayoría de las variables son numéricas, con menos cantidad de variables categóricas. También se osberva que hay un gran número de valores missings en los dos tipos de variables. 
+Este gráfico representa que la mayoría de las variables son numéricas, con menos cantidad de variables categóricas. También se osberva que hay un gran número de valores missings en los dos tipos de variables.
 
 ```{r}
 ## Visualitzem percentatges de NA's en les variables
 vis_miss(datos)
 ```
 
-Concretamente, hay un total de 26% de valores perdidos. 
+Concretamente, hay un total de 26% de valores perdidos.
 
 ```{r}
 ## Generem la matriu de correlacions
 datos %>% dplyr::select(where(is.numeric)) %>% vis_cor()
 ```
 
-Mediante la visualización de este gráfico de correlaciones, se refuerzan las relaciones lineales entre los diferentes pares de variables. 
+Mediante la visualización de este gráfico de correlaciones, se refuerzan las relaciones lineales entre los diferentes pares de variables.
 
 ```{r}
 ## Podem visualitzar condicionants de les dades. En aquest cas, mirem si tenim mes de
@@ -326,15 +378,16 @@ Mediante la visualización de este gráfico de correlaciones, se refuerzan las r
 vis_expect(datos, ~ .x > 2)
 ```
 
+## 3.3. Inspect df
+
 ```{r}
-# 3.3 Inspectdf
 library(inspectdf)
 
 ## Tipus de dades
 inspect_types(datos) %>% show_plot()
 ```
 
-La base de datos contiene 3 variables factor, y 11 cuantitativas. 
+La base de datos contiene 3 variables factor, y 11 cuantitativas.
 
 ```{r}
 ## Utilització de la memoria
@@ -397,8 +450,9 @@ inspect_cat(datos) %>% show_plot()
 inspect_cor(datos) %>% show_plot()
 ```
 
+## 3.4 DataExplorer
+
 ```{r}
-# 3.5 DataExplorer
 library(DataExplorer)
 plot_str(datos)
 introduce(datos)
@@ -412,20 +466,19 @@ plot_intro(datos)
 plot_missing(datos)
 ```
 
-Tal y como se muestra en esta ilustración, se ha asignado un 30% de valores missings en cada variable. 
+Tal y como se muestra en esta ilustración, se ha asignado un 30% de valores missings en cada variable.
 
 ```{r}
 plot_bar(datos)
 ```
 
-Cabe destacar que la variable $key$ posee una gran cantidad de valores faltantes, algo que deberá de tratarse en el preprocesamiento de los datos para evitar el sesgo y que este hecho pueda cambiar significativamente los resultados. Asimismo, $time_signature$ también presenta bastantes valores perdidos.  
+Cabe destacar que la variable $key$ posee una gran cantidad de valores faltantes, algo que deberá de tratarse en el preprocesamiento de los datos para evitar el sesgo y que este hecho pueda cambiar significativamente los resultados. Asimismo, $time_signature$ también presenta bastantes valores perdidos.
 
 ```{r}
 plot_histogram(datos)
 ```
 
-Muchas de las distribuciones de las variables parecen tener asimetría, bien sea por la izquierda o por la derecha. Esto induce a pensar que variables como $acousticness$, $instrumentalness$,  $speechiness$ o $loudness$ tienden a tomar valores más extremos. 
-
+Muchas de las distribuciones de las variables parecen tener asimetría, bien sea por la izquierda o por la derecha. Esto induce a pensar que variables como $acousticness$, $instrumentalness$, $speechiness$ o $loudness$ tienden a tomar valores más extremos.
 
 ```{r}
 library(DataExplorer)
@@ -434,6 +487,7 @@ library(DataExplorer)
 plot_correlation(na.omit(datos), type = "all", maxcat = 5L)
 ```
 
+## 3.5. SmartEDA
 ```{r}
 library("SmartEDA")
 ## Overview of the data
@@ -447,93 +501,838 @@ ExpData(data = datos,type = 2)
 SmartEDA::ExpCTable(datos,Target=NULL,margin=1,clim=10,nlim=5,round=2,bin=NULL,per=T)
 ```
 
-# 3. Outliers treatment
-
-## 4.1. Tratamiento univariante con boxplots
+# 4. Outliers treatment
 
 ```{r}
-outliers_detectados <- list()
+options(scipen = 999)
+diagnose_numeric(datos)
+```
 
-# Variables a analizar 
-vars<-c("audio_valence","danceability","energy","log_acousticness",
-        "log_liveness","song_duration_ms","tempo")
+Vemos que nos identifica muchisimos outliers (mas de 300 en 5 de las variables numericas) lo que inidca que el criterio de selección de anomalias debe ser mas estricto.
 
-# Iteramos sobre las variables
-for (i in vars){
-  #Extraemos valores outliers usando IQR
-  q1 = quantile(datos[[i]], 0.25, na.rm=TRUE)
-  q3 = quantile(datos[[i]], 0.75, na.rm=TRUE)
-  iqr = q3-q1
-  lim_inf = q1-1.5*iqr
-  lim_sup = q3+1.5*iqr
-  
-  out_ind <- which(datos[[i]] < lim_inf | datos[[i]] > lim_sup)
-  datos_outliers <- datos[out_ind,]
-  
-  if (length(out_ind) > 0) {
+```{r}
+diagnose_category(datos)
+```
 
-    extremos <- datos_outliers %>%
-      mutate(distancia_mediana = abs(.data[[i]] - median(datos[[i]], na.rm = TRUE))) %>%
-      arrange(desc(distancia_mediana)) %>%
-      dplyr::select(-distancia_mediana)
+## 4.1. Univariate
 
-    extremos_top10 <- head(extremos, 10)
-    outliers_detectados[[i]] <- extremos_top10
+### 4.1.1. Max and Min
 
-    # Mostramos info resumen
-    cat(paste0("\n\nVariable: ", i,
-               "\n ·Outliers detectados: ", nrow(datos_outliers),
-               "\n ·10 Outliers más extremos: ", paste(extremos_top10[[i]], collapse = ", ")))
+```{r}
+mapply(function(x, name) {
+  cat("var. ", name, ": \n\t min: ", min(x, na.rm = TRUE),
+      "\n\t max: ", max(x, na.rm = TRUE), "\n")
+  invisible(NULL)
+}, datos[, varNum], colnames(datos[, varNum]))
+```
 
-    # Generamos boxplot con ggplot2
-    p <- ggplot(datos, aes(y = .data[[i]])) +
-      geom_boxplot(fill = "salmon", outlier.color = "black", outlier.shape = 21, alpha = 0.6) +
-      labs(title = paste("Boxplot de", i), y = i) +
-      theme_minimal() +
-      theme(plot.title = element_text(size = 14, face = "bold"))
+Vemos que existen outliers en todas la variables en tanto que el maximo o el minimo de estas se encuentra altamente alejado del valor del tercer o el primer quantil respectivamente. És una primer hipòtesis que nos lleva a ejecutar la identificación de estos outliers.
 
-    print(p)
+### 4.1.2. IQR
 
+$$[Q1-1.5*IQR,Q3+1.5*IQR]\\IQR=[Q3-Q1]$$
+
+```{r}
+IQROutlier <- function(variable, rmnas = TRUE) {
+  IQ <- IQR(variable, na.rm = rmnas)
+  intInf <- quantile(variable, probs = c(0.25, 0.75), na.rm = rmnas)[[1]] - 1.5 * IQ
+  intSup <- quantile(variable, probs = c(0.25, 0.75), na.rm = rmnas)[[2]] + 1.5 * IQ
+  posicions <- which(variable >= intSup | variable <= intInf)
+  if (length(posicions) > 0) {
+    cat("Existeixen outliers en les posicions:", paste0(posicions, collapse = ", "), "\n")
   } else {
-    message(paste("Variable:", i, "- Sin outliers detectados"))
+    cat("No existeixen outliers\n")
   }
+  return(posicions)
+}
+```
+
+Aplicamos para todas las variables numéricas
+
+```{r}
+mapply(function(x, name) {
+  cat("\n\nVariable:", name, "\n")
+  IQROutlier(x)
+}, datos[, varNum], varNum)
+```
+
+Tenemos muchisimos outliers por variable y esta visualización es poco usable para tratar con ellos. Vemos que el metodo IQR detecta como outliers muchas observaciones en aquellas variables que presentan asimetria en sus distribuciones. Recordemos los histogramas de estas variables y observamos como a mayor es la asimetria del grafico en una variable mas outliers detecta el metodo IQR:
+
+```{r}
+plot_histogram(datos)
+```
+
+Conluimos para este apartados que podriamos considerar realmente outliers aquellos detectados por IQR en distribuciones gaussianas como en danceability por ejemplo.
+
+### 4.1.3. Boxplot
+
+```{r, warning=FALSE}
+library(patchwork)
+
+plots <- lapply(varNum, function(v) {
+  ggplot(datos, aes(y = datos[[v]])) +
+    geom_boxplot(fill = "skyblue", color = "black") +
+    labs(title = v, y = v) +
+    theme_minimal()
+})
+
+wrap_plots(plots)
+```
+
+Graficando los boxplots vemos de forma más evidente esta relación entre la asimetria y la detección sobrepasada de valores anomalos. Concretamente, nos fijamos en las variables instrumentalness, speechiness, liveness, song_duration i loudness, que en este orden son las variables que más outliers presentan de más a menos y, por otro lado, estan ordenadas segun la asimetria presentada en sus boxplots y histogramas.
+
+El problema está en que hay una cantidad abudante de valores que se encuentran fuera del intervalo [Q1,Q3], reflejado en los boxplots como puntos, y estos són detectados como outliers incorrectamene. Una posible solución seria escalar estas variables.
+
+### 4.1.4. Z-Score
+
+```{r}
+# Función para un histograma z-score con líneas ±3
+hist_z3 <- function(vec, var_name, binwidth = NULL) {
+  # Filtrar no finitos
+  x <- vec[is.finite(vec)]
+  # Si no hay datos válidos o sd = 0, devolver un panel informativo
+  if (length(x) == 0 || sd(x, na.rm = TRUE) == 0) {
+    return(
+      ggplot() +
+        annotate("text", x = 0, y = 0, label = paste0(var_name, "\nSin variación o sin datos válidos")) +
+        theme_void() + labs(title = var_name)
+    )
+  }
+  # z-scores (scale devuelve matriz -> convertir a numérico)
+  z <- as.numeric(scale(x))
+
+  # Binwidth automático si no se especifica
+  if (is.null(binwidth)) {
+    r <- diff(range(z))
+    binwidth <- if (is.finite(r) && r > 0) r / 30 else 0.5
+  }
+
+  ggplot(data.frame(z = z), aes(x = z)) +
+    geom_histogram(binwidth = binwidth, fill = "skyblue", color = "black", boundary = 0) +
+    geom_vline(xintercept = c(-3, 3), linetype = "dashed", color = "red", linewidth = 0.8) +
+    theme_minimal() +
+    labs(title = var_name, x = "z-score", y = "Frecuencia")
+}
+
+# Construir todos los plots
+plots <- lapply(varNum, function(v) hist_z3(datos[[v]], v))
+
+# Mostrar en cuadrícula (ajusta ncol según prefieras)
+wrap_plots(plots, ncol = 4) + plot_annotation(title = "Histogramas (z-score)")
+
+```
+```{r}
+library(tidyr)
+
+# Función auxiliar: métricas y outliers z>|3| por variable 
+calc_z_outliers <- function(x, var_name) {
+  # Mantener solo valores finitos
+  xf <- x[is.finite(x)]
+  n_total   <- length(x)
+  n_finite  <- sum(is.finite(x))
+  mu <- mean(xf, na.rm = TRUE)
+  s  <- sd(xf, na.rm = TRUE)
+
+  if (!is.finite(s) || s == 0 || n_finite == 0) {
+    return(list(
+      summary = tibble(
+        variable = var_name, n = n_total, n_finite = n_finite,
+        mean = mu, sd = s,
+        thr_low = NA_real_, thr_high = NA_real_,
+        n_out_z3 = 0, pct_out_z3 = 0
+      ),
+      detail = tibble(
+        variable = character(0), row_id = integer(0),
+        value = numeric(0), z = numeric(0)
+      )
+    ))
+  }
+
+  # Umbrales en escala ORIGINAL equivalentes a |z|>3
+  thr_low  <- mu - 3*s
+  thr_high <- mu + 3*s
+
+  # Índices (en el data.frame original) de outliers por z>|3|
+  idx_finite <- which(is.finite(x))
+  z_vals <- (xf - mu) / s
+  out_mask <- abs(z_vals) > 3
+  out_idx  <- idx_finite[out_mask]
+
+  summary_tbl <- tibble(
+    variable = var_name,
+    n = n_total,
+    n_finite = n_finite,
+    mean = mu, sd = s,
+    thr_low = thr_low, thr_high = thr_high,   # μ±3σ en escala original
+    n_out_z3 = length(out_idx),
+    pct_out_z3 = ifelse(n_finite > 0, 100*length(out_idx)/n_finite, 0)
+  )
+
+  detail_tbl <- tibble(
+    variable = var_name,
+    row_id = out_idx,
+    value  = x[out_idx],
+    z      = (x[out_idx] - mu) / s
+  )
+
+  list(summary = summary_tbl, detail = detail_tbl)
+}
+
+# Aplicar a todas las variables numéricas 
+res_list <- map(varNum, ~ calc_z_outliers(datos[[.x]], .x))
+
+tabla_resumen_z3 <- bind_rows(map(res_list, "summary")) %>%
+  arrange(desc(n_out_z3))
+
+tabla_detalle_z3 <- bind_rows(map(res_list, "detail")) %>%
+  arrange(variable, desc(abs(z)))
+
+#  Resultados:
+tabla_resumen_z3
+# head(tabla_detalle_z3)  # si solo quieres una vista
+```
+
+Vemos que con este escalado parece que hemos solucionado el problema que teniamos con la detección de outliers via IQR. Ahora tenemos outliers en 7 de las 10 variables y en todos suponen menos del 6% de las observaciones y menos de 2% en todos menos en los 2 con mas valores anómalos.
+
+### 4.1.5. Hampel Identifier
+
+Utilizamos la mediana y la desviación absoluta meidana en vez de la media.
+
+```{r}
+# Función para detectar outliers con Hampel
+hampel_outliers <- function(x, var_name) {
+  # Filtrar valores finitos
+  x_finite <- x[is.finite(x)]
+  if (length(x_finite) == 0) {
+    return(list(
+      summary = tibble(variable = var_name, median = NA_real_, mad = NA_real_,
+                       lower_bound = NA_real_, upper_bound = NA_real_,
+                       n_outliers = 0, pct_outliers = 0),
+      detail = tibble(variable = character(0), row_id = integer(0), value = numeric(0))
+    ))
+  }
+
+  med <- median(x_finite, na.rm = TRUE)
+  madv <- mad(x_finite, constant = 1, na.rm = TRUE)
+  lower <- med - 3 * madv
+  upper <- med + 3 * madv
+
+  idx_finite <- which(is.finite(x))
+  out_idx <- idx_finite[which(x_finite < lower | x_finite > upper)]
+
+  # Tabla resumen
+  summary_tbl <- tibble(
+    variable = var_name,
+    median = med,
+    mad = madv,
+    lower_bound = lower,
+    upper_bound = upper,
+    n_outliers = length(out_idx),
+    pct_outliers = 100 * length(out_idx) / length(x_finite)
+  )
+
+  # Tabla detallada
+  detail_tbl <- tibble(
+    variable = var_name,
+    row_id = out_idx,
+    value = x[out_idx]
+  )
+
+  list(summary = summary_tbl, detail = detail_tbl)
+}
+
+# Aplicar a todas las variables numéricas
+res_hampel <- map(varNum, ~ hampel_outliers(datos[[.x]], .x))
+
+# Combinar resultados en tablas 
+tabla_resumen_hampel <- bind_rows(map(res_hampel, "summary")) %>%
+  arrange(desc(n_outliers))
+
+tabla_detalle_hampel <- bind_rows(map(res_hampel, "detail")) %>%
+  arrange(variable, row_id)
+
+#  Mostrar resultados
+tabla_resumen_hampel        # resumen por variable
+# head(tabla_detalle_hampel)  # detalle de los outliers (índices y valores)
+
+```
+Este método queda descartado para nuestra base de datos ya que se detecta como outlier más del 20% de las observaciones en cuatro variables y más del 5 en 8 de ellas. 
+
+Ademmás, antes de su aplicación ya intuiamos que no iba a resultar productivo este metodo ya que operar con la mediana y la desvación absoluta mediana en distribuciones asimétricas no es compatible.
+
+### 4.1.6. Statistics Tests
+
+#### 4.1.6.1. Grubb's Test
+
+Detección de valores extremos en distribuciones Gaussianas.
+
+Por lo tanto, primero estudiamos que variables admiten este test.
+```{r}
+library(nortest)  
+
+# Anderson–Darling para cada variable
+ad_por_variable <- function(x, var_name) {
+  x <- x[is.finite(x)]
+  if (length(x) < 8) {
+    return(tibble(variable = var_name, n = length(x), p_ad = NA_real_, decision = "No test (<8)"))
+  }
+  p <- tryCatch(nortest::ad.test(x)$p.value, error = function(e) NA_real_)
+  tibble(
+    variable = var_name,
+    n = length(x),
+    p_ad = p,
+    decision = ifelse(!is.na(p) && p >= 0.05, "≈ Normal (apto Grubbs)", "No normal (No apto Grubbs)")
+  )
+}
+
+resultado_AD <- map_dfr(varNum, ~ ad_por_variable(datos[[.x]], .x)) %>%
+  arrange(decision, desc(p_ad))
+
+resultado_AD
+
+```
+
+No hay ninguna variable que acepte este test, ya que en todas no se puede asumir normalidad, por lo tanto no será usado en nuestro estudio.
+
+#### 4.1.6.2. Dixon's Test
+
+Este test también queda descartado ya que solo es posible aplicarlo en bbdd pequeñas de entre 3 y 30 observaciones. Teniendo 13186 observaciones el uso de esta prueba no es viable.
+
+#### 4.1.6.3. Rosner's Test
+
+Este test parece ser aplicable ya que es aplicable para muestras grandes y además cuenta con la ventaja de la detección múltiple de valores atípicos. No obstante, este asume normalidad en los datos y ya hemos comprobado que ninguna variable la cumple en el primer subapartado de esta sección. 
+
+Por lo tanto, no hemos podido aplicar ninguno de los tests en nuestra bbdd pero hemos concluido de este apartado que contamos con distribuciones no normales.
+
+### 4.1.7. Conclusiones
+
+Después de haber aplicado todos los métodos de tratamiento de valores anomalos en nuestra base de datos hemos visto que con las tres primeras secciones detectabamos muchos outliers incorrectamente debido a problmas de asimetria y de escala.
+
+Ha sido al escalar las variables (Z-Score) cuando hemos podido recoger un conjunto de posibles valores atípicos más coherente en el que poder imputar aquellos que concluyamos como outliers definitivos. Estos estan guardados con su respectivos ID y variable correspondiente en tabla_detalle_z3.
+
+```{r}
+head(tabla_detalle_z3,6)
+table(tabla_detalle_z3$variable)
+```
+
+## 4.2. Multivariate
+
+Scatter plot de los trios de variable más interesantes (correlacionados):
+```{r}
+library(scatterplot3d)
+
+num <- datos[, varNum, drop = FALSE]
+
+# Matriz de correlaciones (por pares, ignorando NA)
+C <- cor(num, use = "pairwise.complete.obs")
+
+# Puntuar todos los tríos por media de |cor| en sus 3 pares
+comb3  <- combn(varNum, 3, simplify = FALSE)
+scores <- vapply(comb3, function(v) {
+  mean(abs(c(C[v[1], v[2]], C[v[1], v[3]], C[v[2], v[3]])), na.rm = TRUE)
+}, numeric(1))
+
+# Seleccionar los N tríos “más interesantes”
+N   <- 6 # cambia si quieres más/menos
+ord <- order(scores, decreasing = TRUE)
+top_trios <- comb3[ord][seq_len(min(N, length(comb3)))]
+
+#  Mostrar ranking
+ranking <- data.frame(
+  rank = seq_along(top_trios),
+  trio = sapply(top_trios, paste, collapse = " · "),
+  score = round(scores[ord][seq_along(top_trios)], 3),
+  row.names = NULL
+)
+print(ranking)
+
+# Graficar (con escalado para comparabilidad)
+scale_axes <- TRUE
+old_par <- par(mfrow = c(ceiling(length(top_trios) / 3), min(3, length(top_trios))))
+on.exit(par(old_par), add = TRUE)
+
+for (tri in top_trios) {
+  x <- num[[tri[1]]]; y <- num[[tri[2]]]; z <- num[[tri[3]]]
+  if (scale_axes) { x <- scale(x)[,1]; y <- scale(y)[,1]; z <- scale(z)[,1] }
+  scatterplot3d(
+    x, y, z,
+    main = paste(tri, collapse = " | "),
+    xlab = tri[1], ylab = tri[2], zlab = tri[3],
+    pch = 16
+  )
+}
+
+```
+Hacemos el gafico interactivo 3D para el unico trio que presenta una correlación conjunta superior a 0.5 (loudness, energy, acousticness)
+```{r, warning=FALSE}
+library(plotly)
+
+(fig <- plotly::plot_ly(datos, x = ~loudness, y = ~energy, z = ~acousticness, size = 1) %>% 
+       add_markers())
+```
+### 4.2.1. Caso general
+
+Como contamos con una matriz de covarianza singular con colinealidad fuerte entre algunas de nuestras variables, debemos aplicar fallback a PCA en vez de la forma común dada en la teoria:
+```{r}
+library(mvoutlier)
+
+# Subset y saneo de columnas 
+X <- datos[, varNum, drop = FALSE]
+# Asegurar numéricas
+X <- X[, sapply(X, is.numeric), drop = FALSE]
+
+# Quitar columnas con varianza 0 o todo NA
+sd_cols <- sapply(X, function(x) sd(x, na.rm = TRUE))
+X <- X[, sd_cols > 0 & !is.na(sd_cols), drop = FALSE]
+
+# Quitar colinealidad casi perfecta (|r| >= 0.999)
+if (ncol(X) > 1) {
+  repeat {
+    C <- suppressWarnings(cor(X, use = "pairwise.complete.obs"))
+    up <- which(abs(C) >= 0.999 & upper.tri(C), arr.ind = TRUE)
+    if (!nrow(up)) break
+    # elimina la de menor varianza del par
+    to_drop <- unique(colnames(X)[apply(up, 1, function(idx){
+      v1 <- var(X[[idx[1]]], na.rm = TRUE)
+      v2 <- var(X[[idx[2]]], na.rm = TRUE)
+      if (v1 <= v2) idx[1] else idx[2]
+    })])
+    X <- X[, setdiff(colnames(X), to_drop), drop = FALSE]
+  }
+}
+
+# Filas completas
+Xc <- X[complete.cases(X), , drop = FALSE]
+
+# Garantizar n > p
+if (nrow(Xc) <= ncol(Xc)) {
+  ord <- order(apply(Xc, 2, var, na.rm = TRUE), decreasing = TRUE)
+  p_new <- max(1, nrow(Xc) - 1)
+  Xc <- Xc[, ord[seq_len(p_new)], drop = FALSE]
+}
+
+##  DD-Plot con fallback robusto
+dd_with_fallback <- function(M, quan = 1/2, alpha = 0.025) {
+  M <- as.matrix(M)
+  tryCatch(
+    dd.plot(M, quan = quan, alpha = alpha),
+    error = function(e) {
+      message("Covarianza singular: hago fallback a PCA (scores). Detalle: ", e$message)
+      pcs <- prcomp(M, center = TRUE, scale. = TRUE)
+      # nº de componentes: hasta 95% var o n-1, lo que ocurra antes
+      var_exp <- cumsum(pcs$sdev^2) / sum(pcs$sdev^2)
+      k <- min(which(var_exp >= 0.95))
+      k <- min(k, nrow(M) - 1, ncol(M))
+      dd.plot(pcs$x[, seq_len(k), drop = FALSE], quan = quan, alpha = alpha)
+    }
+  )
+}
+
+distances <- dd_with_fallback(Xc, quan = 1/2, alpha = 0.025)
+
+```
+
+Las observaciones distribuidas en la rectangulo inferior izquierdo del dd plot són aquellas observaciónes con valores bajos en ambas distancias (no outliers).
+
+Los que se encuentran en la parte superior izquierda, al contar con un valor de distancia robusta alto, són outliers robustos con una fuerte influencia.
+
+Todos aquellos que se encuentran en el lado derecho de la linea vertica central són aquellos llamados "leverage points", observaciones que influyen mucho en la covarianza clásica.
+
+Ahora, obtenemos los índices de aquellos puntos considerados outliers según las anteriores características.
+```{r}
+outliers<-distances$outliers
+indOut<-which(outliers==TRUE)
+indOut # 141 outliers
+```
+
+Visualizamos todos los outliers detectados como true
+```{r}
+head(distances$md.cla)
+```
+```{r}
+head(distances$md.rob)
+```
+
+```{r}
+head(outliers)
+```
+```{r}
+table(outliers)
+```
+```{r}
+distances_df<-as.data.frame(distances)
+distances_df<-distances_df[order(-distances_df$md.rob),]
+head(distances_df,10)
+```
+```{r}
+p <- 10   
+alpha <- 0.025
+umbral2 <- qchisq(1 - alpha, df = p) # sobre D^2
+umbral  <- sqrt(umbral2)             # sobre D (md.rob)
+
+plot(distances_df$md.rob, 
+     type = "h", 
+     ylab = "Distancia de Mahalanobis robusta", 
+     xlab = "Índice de observación",
+     main = sprintf("Outliers multivariantes (p=%d)", p))
+abline(h = umbral, col = "red", lwd = 2, lty = 2)
+```
+
+PROBLEMA: Con este metodo solo me deja calcular las distancias de observaciones sin NA's (376). El resto las excluye y solo puedo estudiar valores anomalos dentro de este subconjunto muy pequeño excluyendo las otras 12mil y pico obs.
+
+### 4.2.2. PCA
+
+Hay metodos basados en correlaciones que nos permiten detectar outliers. De momento no los ejecutaremos pero que sepamos que exite esa posibilidad en caso de encontrar dificultades si concluimos que nuestras variables regressoras presentan problemas de multicol·linealidad. Hasta ahora no lo parece.
+
+### 4.2.3. Distancia de Mahalanobis 
+
+```{r}
+distancia_mahalanobis <- mahalanobis(datos[,varNum], colMeans(datos[,varNum]), cov(datos[,varNum]))
+summary(distancia_mahalanobis)
+```
+Como vemos tenemos problemas de calculo con la distancia de mahalanobis debido a la cantidad de NA's que tenemos en nuestra bbdd. Haremos este metodo más adelante cuando Dante nos guie en si usar algun tipo de metodo de imputacion de NA's previo para calcular estas distancias.
+
+### 4.2.4. Regresió Lineal i residus 
+
+Un punto con un residuo grande puede considerarse un valor anomalo.
+
+### 4.2.5. Distancia de Cook
+
+Podemos calcular las distancias de Cook para discriminar como outliers aquellas observaciones que cuenten con un valor superior a 1.
+
+### 4.2.6. K-Nearest Neighbors (KNN) Outlier Score
+
+```{r}
+library(adamethods)
+res_knn<-do_knno(datos[,varNum], k=1, top_n=100)
+```
+Con este metodo conseguimos el identificador de las 100 observaciones con un outliers scoore mas alto.
+
+```{r}
+## --- Parámetros ---
+k <- 1              # usa el mismo k que en do_knno()
+idx_targets <- res_knn  # tus 100 índices
+
+## --- 1) Preparar matriz X con variables numéricas ---
+X <- datos[, varNum, drop = FALSE]
+p <- ncol(X)
+
+## --- 2) Estandarizar por columna ignorando NAs ---
+std_col <- function(v) {
+  mu <- mean(v, na.rm = TRUE)
+  sdv <- sd(v, na.rm = TRUE)
+  if (is.na(sdv) || sdv == 0) return((v - mu))   # evita dividir por 0
+  (v - mu) / sdv
+}
+Xs <- as.data.frame(lapply(X, std_col))
+Xs <- as.matrix(Xs)  # para operaciones más rápidas
+
+n <- nrow(Xs)
+
+## --- 3) Función de distancia euclídea "pairwise" ajustada por missingness ---
+## d_ij = sqrt( sum((xi-xj)^2 over m) * (p / m) ), con m vars observadas en el par
+pairwise_dist_row <- function(i, Xs) {
+  xi <- Xs[i, ]
+  # Máscara NA por columnas respecto xi (TRUE si xi es no-NA)
+  mask_i <- !is.na(xi)
+  d <- rep(NA_real_, n)
+  for (j in 1:n) {
+    if (j == i) next
+    xj <- Xs[j, ]
+    mask <- mask_i & !is.na(xj)
+    m <- sum(mask)
+    if (m == 0) {
+      d[j] <- NA_real_
+    } else {
+      diff2 <- xi[mask] - xj[mask]
+      d[j] <- sqrt(sum(diff2 * diff2) * (p / m))
+    }
+  }
+  d
+}
+
+## --- 4) Obtener el k-NN distance para cada índice objetivo respecto a TODO el dataset ---
+get_knn_dist <- function(i, Xs, k = 1) {
+  d <- pairwise_dist_row(i, Xs)
+  # Ordenar ignorando NAs y excluyendo la propia observación
+  vec <- sort(d[!is.na(d)], partial = k)
+  if (length(vec) < k) return(NA_real_)
+  vec[k]
+}
+
+## --- 5) Calcular scores para tus 100 observaciones ---
+scores_res <- vapply(idx_targets, function(i) get_knn_dist(i, Xs, k = k), numeric(1))
+
+resultado_res_knn <- data.frame(
+  fila = idx_targets,
+  score_knn = scores_res
+)
+
+## --- (Opcional) Si quieres una versión 'avg_k' (media de las k distancias más cercanas) ---
+get_knn_avgdist <- function(i, Xs, k = 5) {
+  d <- pairwise_dist_row(i, Xs)
+  vec <- sort(d[!is.na(d)], partial = k)
+  if (length(vec) < k) return(NA_real_)
+  mean(vec[1:k])
+}
+# ejemplo: avg_scores_res <- vapply(idx_targets, function(i) get_knn_avgdist(i, Xs, k = 5), numeric(1))
+
+## --- (Opcional) Normalizaciones monótonas para alinear la "escala" de do_knno ---
+## Mantienen el ranking, por si do_knno aplica alguna de estas:
+minv <- min(scores_res, na.rm = TRUE); maxv <- max(scores_res, na.rm = TRUE)
+resultado_res_knn$score_minmax_0_1 <- (resultado_res_knn$score_knn - minv) / (maxv - minv)
+
+medv <- median(scores_res, na.rm = TRUE); madv <- mad(scores_res, constant = 1, na.rm = TRUE)
+resultado_res_knn$score_robust_z <- (resultado_res_knn$score_knn - medv) / madv
+
+## --- Ordenar por mayor sospecha (score más grande) ---
+resultado_res_knn <- resultado_res_knn[order(-resultado_res_knn$score_knn), ]
+
+## Ver top
+head(resultado_res_knn, 10)
+```
+```{r}
+plot(resultado_res_knn$score_knn)
+```
+
+PROBLEMA: Solo tenemos los outliers scores de las primeras 100 observaciones con mayor valor. Podemos hacerlo para las primeras 100 y estudiar donde encontramos el codo en el grafico de dispersion y escoger un umbral de decisión como criterio de selección de outliers.
+
+### 4.2.7. Local Outlier Factor (LOF)
+
+```{r}
+#library(DMwR2)
+#ibrary(dplyr)
+
+#outlier.scores <- lofactor(datos[, varNum], k = 5)
+#par(mfrow=c(1,1))
+#plot(density(outlier.scores))
+#outlier.scores
+#outliers <- order(outlier.scores, decreasing=T)
+#outliers <- order(outlier.scores, decreasing=T)[1:5]
+```
+
+
+#### 4.2.7.1. Nueva versión de LOF
+
+### 4.2.8. Isolation Forest
+
+
+# 5.NA's
+
+## 5.1 Resumen de NA (variables y casos)
+```{r}
+datos$fila_original <- seq_len(nrow(datos))
+
+datos <- datos |>
+  dplyr::mutate(
+    key            = factor(key),
+    audio_mode     = factor(audio_mode),
+    time_signature = factor(time_signature)
+  )
+na_var_sum  <- naniar::miss_var_summary(datos)
+na_case_sum <- naniar::miss_case_summary(datos)
+
+print(head(na_var_sum, 15))
+print(head(na_case_sum, 10))
+```
+
+## 5.2 “Bloque” de filas con todos los predictores en NA
+
+```{r}
+preds <- setdiff(names(datos), c("ID","song_popularity"))
+bloque_na_filas <- sum(rowSums(is.na(datos[, preds])) == length(preds))
+completas_pred  <- sum(stats::complete.cases(datos[, preds]))
+cat("\n[1.2] Filas con TODOS los predictores en NA:", bloque_na_filas, "\n")
+cat("[1.2] Filas con predictores completos:", completas_pred, "\n")
+```
+
+## 5.3 Exclusión del bloque sin información de predictores
+```{r}
+
+datos_filtrado <- datos[rowSums(is.na(datos[, preds])) < length(preds), ]
+cat("\n[1.3] Dimensión tras excluir bloque:", nrow(datos_filtrado), "x", ncol(datos_filtrado), "\n")
+```
+## 5.4 Detección y exclusión de variables casi nulas
+```{r}
+excluir_base <- c("ID", "song_popularity")
+
+X <- datos[ , setdiff(names(datos), excluir_base), drop = FALSE]
+
+nzv_like <- function(x){
+  x_noNA <- x[!is.na(x)]
+  n <- length(x_noNA)
+  if (n == 0) return(list(nzv = TRUE, reason = "all_NA"))
+  # % de valores únicos (como caret)
+  pct_unique <- 100 * (length(unique(x_noNA)) / n)
+  # ratio entre la categoría/valor más frecuente y el segundo
+  tb <- sort(table(x_noNA), decreasing = TRUE)
+  top <- as.numeric(tb[1])
+  second <- as.numeric(if (length(tb) >= 2) tb[2] else 0)
+  freq_ratio <- if (second == 0) Inf else top / second
+  # constante (varianza cero) para numéricos
+  const_num <- is.numeric(x_noNA) && sd(x_noNA) < .Machine$double.eps
+  # near-zero variance estilo caret
+  nzv <- (pct_unique <= 10) && (freq_ratio > 19)
+  reason <- c()
+  if (const_num) reason <- c(reason, "constante")
+  if (nzv)       reason <- c(reason, "near-zero")
+  if (length(reason) == 0) reason <- "ok"
+  list(nzv = (const_num || nzv), reason = paste(reason, collapse = "+"),
+       pct_unique = pct_unique, freq_ratio = freq_ratio)
+}
+
+res <- lapply(X, nzv_like)
+tab <- data.frame(
+  variable   = names(res),
+  nzv        = vapply(res, `[[`, logical(1), "nzv"),
+  reason     = vapply(res, `[[`, character(1), "reason"),
+  pct_unique = round(vapply(res, `[[`, numeric(1), "pct_unique"), 3),
+  freq_ratio = round(vapply(res, `[[`, numeric(1), "freq_ratio"), 3),
+  row.names = NULL
+)
+
+# Resultado
+cat("\nVariables que vamos a eliminar):\n")
+print(tab[tab$nzv, c("variable","reason","pct_unique","freq_ratio")], row.names = FALSE)
+
+cat("\nVariables que conservamos:\n")
+print(tab[!tab$nzv, c("variable","pct_unique","freq_ratio")], row.names = FALSE)
+
+
+vars_a_quitar <- tab$variable[tab$nzv]
+datos_nzv <- datos[, setdiff(names(datos), vars_a_quitar), drop = FALSE]
+```
+
+## 5.6 Selección de predictores 
+
+```{r}
+
+## 5.6.1) Correlaciones con el target (solo numéricas, excluyendo ID)
+is_num  <- sapply(datos_nzv, is.numeric)
+nums    <- setdiff(names(datos_nzv)[is_num], c("ID","song_popularity","fila_original"))
+cors    <- sapply(nums, function(v) cor(datos_nzv[[v]], datos_nzv[["song_popularity"]], use = "complete.obs"))
+cat("\n[3.1] Correlaciones con song_popularity:\n")
+print(round(cors, 4))
+## 5.6.2) Selección por umbral |r| >= 0.3
+umbral <- 0.3
+sel_num <- names(which(abs(cors) >= umbral))
+cat("\n[3.2] Numéricas seleccionadas con |r| >= ", umbral, ":\n", sep = "")
+print(sel_num)
+
+## 5.6.3) Añadir categóricas 
+cat_vars <- intersect(c("key","audio_mode"), names(datos_nzv))
+predictores_finales <- unique(c(sel_num, cat_vars))
+cat("\n[3.3] Predictores finales (numéricas por score + categóricas):\n")
+print(predictores_finales)
+```
+
+## 5.7 Filtrado de outliers con el score KNN
+
+```{r}
+
+stopifnot(exists("resultado_res_knn"))
+stopifnot(all(c("fila") %in% names(resultado_res_knn)))
+stopifnot("ID" %in% names(datos))        # para mapear fila -> ID
+stopifnot("ID" %in% names(datos_nzv))    # para filtrar en el dataset final
+
+# Elegimos score normalizado en [0,1]
+if ("score_minmax_0_1" %in% names(resultado_res_knn)) {
+  score_norm <- resultado_res_knn$score_minmax_0_1
+} else {
+  
+  s <- resultado_res_knn$score_knn
+  s_min <- min(s, na.rm = TRUE); s_max <- max(s, na.rm = TRUE)
+  score_norm <- (s - s_min) / (s_max - s_min)
+}
+
+# Filas que superan el umbral 0.3
+umbral <- 0.3
+filas_out <- resultado_res_knn$fila[!is.na(score_norm) & score_norm >= umbral]
+
+# Convertimos filas -> IDs del dataset original
+filas_out <- filas_out[filas_out >= 1 & filas_out <= nrow(datos)]
+ids_out   <- unique(as.character(datos$ID[filas_out]))
+ids_out   <- ids_out[!is.na(ids_out)]
+
+cat("\n[4] Outliers por score >= ", umbral, 
+    "  | filas=", length(filas_out), 
+    "  | IDs únicos=", length(ids_out), "\n", sep = "")
+
+# Filtramos en el dataset ya depurado (datos_nzv)
+n0 <- nrow(datos_nzv)
+en_nzv <- sum(datos_nzv$ID %in% ids_out)
+
+if (en_nzv > 0) {
+  datos_nzv <- datos_nzv[!(datos_nzv$ID %in% ids_out), , drop = FALSE]
+  cat("Filtrado aplicado en datos_nzv: ", n0, " -> ", nrow(datos_nzv),
+      " (eliminadas ", en_nzv, " filas)\n", sep = "")
+} else {
+  cat("AVISO: 0 IDs intersectan con datos_nzv (puede que esas filas ya se eliminasen por NA/NZV o por partición).\n")
 }
 
 ```
 
-## 4.2 Tratamiento multivariante con distancias  de Gower
 ```{r}
-library(gower)
-library(dplyr)
-library(ggplot2)
-library(tibble)
+set.seed(123)
+idx <- sample.int(nrow(datos_nzv), size = floor(0.7 * nrow(datos_nzv)))
+train <- datos_nzv[idx, , drop = FALSE]
+test  <- datos_nzv[-idx, , drop = FALSE]
 
-X <- vars_mixtas  # tu data.frame ya seleccionado
-k <- 10           # vecinos (ajústalo 5–20)
+y_train <- train[["song_popularity"]]
+y_test  <- test[["song_popularity"]]
+cat("\n[5] Split -> train:", nrow(train), " | test:", nrow(test), "\n")
+```
 
-# k-NN sobre el propio conjunto (primera columna suele ser el “self” con distancia 0)
-topn <- gower_topn(X, X, n = nrow(X), k = k + 1)
+```{r}
+# Identificación numérica/factor en TRAIN
+is_num_train  <- sapply(train, is.numeric)
+is_fact_train <- sapply(train, is.factor)
 
-# media de distancias a los k vecinos (excluyendo el self)
-knn_score <- rowMeans(topn$distance[, -1, drop = FALSE])
+# Medianas (num) y modas (factor) en TRAIN
+medianas <- vapply(train[, is_num_train, drop = FALSE],
+                   function(v) stats::median(v, na.rm = TRUE), numeric(1))
 
-# umbral y outliers (p.ej., top 1%)
-umbral <- quantile(knn_score, 0.99)
-idx_outliers <- which(knn_score > umbral)
+moda <- function(v){
+  v2 <- v[!is.na(v)]
+  if (!length(v2)) return(NA)
+  names(sort(table(v2), decreasing = TRUE))[1]
+}
+modas <- vapply(train[, is_fact_train, drop = FALSE], moda, character(1))
 
-# gráfico rápido
-tibble(ID = seq_along(knn_score), score = knn_score) |>
-  ggplot(aes(ID, score)) +
-  geom_line(color = "steelblue") +
-  geom_hline(yintercept = umbral, linetype = "dashed", color = "red") +
-  labs(title = "Rareza (media kNN con Gower)", y = "Distancia media kNN")
+# Función de imputación
+imputa_df <- function(df){
+  # Numéricas
+  for (nm in names(medianas)) if (nm %in% names(df)) {
+    v <- df[[nm]]; v[is.na(v)] <- medianas[[nm]]; df[[nm]] <- v
+  }
+  # Factores
+  for (nm in names(modas)) if (nm %in% names(df)) {
+    v <- df[[nm]]; repl <- modas[[nm]]
+    v[is.na(v)] <- repl
+    if (is.factor(v) && !is.na(repl) && !(repl %in% levels(v))) {
+      levels(v) <- c(levels(v), repl)
+    }
+    df[[nm]] <- v
+  }
+  df
+}
 
-# filtrar
-datos_limpio <- datos[-idx_outliers, ]
+train_imp <- imputa_df(train)
+test_imp  <- imputa_df(test)
 
+cat("[6] Imputación realizada con mediana (num) y moda (factor) usando TRAIN.\n")
+# Conjunto de predictores para modelado
+# =====================================================================
+preds_final <- setdiff(names(train_imp), c("ID", "song_popularity"))
+cat("[7] Predictores finales:", length(preds_final), "\n")
 ```
 
 
 
-# Variables a analizar 
+
+
+
+
+
+
 
