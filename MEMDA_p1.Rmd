@@ -182,7 +182,7 @@ par(mfrow = c(1, 1))
 
 -   **time_signature**:
 
-la categoría 4 es la más frecuente, con casi 8000 canciones. Esto corresponde al compás 4/4, el más común en música popular. El resto de niveles, 0, 1, 3 y 5 son mucho menos frecuentes, lo que indica que compases alternativos o inusuales son raros en esta colección de canciones.
+La categoría 4 es la más frecuente, con casi 8000 canciones. Esto corresponde al compás 4/4, el más común en música popular. El resto de niveles, 0, 1, 3 y 5 son mucho menos frecuentes, lo que indica que compases alternativos o inusuales son raros en esta colección de canciones.
 
 -   **key**:
 
@@ -387,7 +387,7 @@ library(inspectdf)
 inspect_types(datos) %>% show_plot()
 ```
 
-La base de datos contiene 3 variables factor, y 11 cuantitativas.
+La base de datos contiene 3 variables factor y 11 cuantitativas.
 
 ```{r}
 ## Utilització de la memoria
@@ -508,7 +508,7 @@ options(scipen = 999)
 diagnose_numeric(datos)
 ```
 
-Vemos que nos identifica muchisimos outliers (mas de 300 en 5 de las variables numericas) lo que inidca que el criterio de selección de anomalias debe ser mas estricto.
+Se observa que identifica muchos outliers (más de 300 en 5 de las variables numéricas), lo que inidca que el criterio de selección de anomalías debe ser más estricto.
 
 ```{r}
 diagnose_category(datos)
@@ -526,7 +526,7 @@ mapply(function(x, name) {
 }, datos[, varNum], colnames(datos[, varNum]))
 ```
 
-Vemos que existen outliers en todas la variables en tanto que el maximo o el minimo de estas se encuentra altamente alejado del valor del tercer o el primer quantil respectivamente. És una primer hipòtesis que nos lleva a ejecutar la identificación de estos outliers.
+Se identifican outliers en todas la variables en tanto que el máximo o el mínimo de estas se encuentra altamente alejado del valor del tercer o el primer cuantil respectivamente. Es una primera hipótesis que nos lleva a ejecutar la identificación de estos outliers.
 
 ### 4.1.2. IQR
 
@@ -556,13 +556,13 @@ mapply(function(x, name) {
 }, datos[, varNum], varNum)
 ```
 
-Tenemos muchisimos outliers por variable y esta visualización es poco usable para tratar con ellos. Vemos que el metodo IQR detecta como outliers muchas observaciones en aquellas variables que presentan asimetria en sus distribuciones. Recordemos los histogramas de estas variables y observamos como a mayor es la asimetria del grafico en una variable mas outliers detecta el metodo IQR:
+Hay muchos outliers por variable y esta visualización es poco usable para tratar con ellos. El método IQR detecta como outliers muchas observaciones en aquellas variables que presentan asimetría en sus distribuciones. Los histogramas de estas variables se observa como a mayor es la asimetría del gráfico en una variable, más outliers detecta el método IQR:
 
 ```{r}
 plot_histogram(datos)
 ```
 
-Conluimos para este apartados que podriamos considerar realmente outliers aquellos detectados por IQR en distribuciones gaussianas como en danceability por ejemplo.
+Conluimos para este apartados que podríamos considerar realmente outliers aquellos detectados por IQR en distribuciones gaussianas como en $danceability$ por ejemplo.
 
 ### 4.1.3. Boxplot
 
@@ -579,9 +579,9 @@ plots <- lapply(varNum, function(v) {
 wrap_plots(plots)
 ```
 
-Graficando los boxplots vemos de forma más evidente esta relación entre la asimetria y la detección sobrepasada de valores anomalos. Concretamente, nos fijamos en las variables instrumentalness, speechiness, liveness, song_duration i loudness, que en este orden son las variables que más outliers presentan de más a menos y, por otro lado, estan ordenadas segun la asimetria presentada en sus boxplots y histogramas.
+Graficando los boxplots, vemos de forma más evidente esta relación entre la asimetría y la detección sobrepasada de valores anómalos. Concretamente, nos fijamos en las variables $instrumentalness$, $speechiness$, $liveness$, $song_duration$ y $loudness$, que en este orden son las variables que más outliers presentan de más a menos y, por otro lado, están ordenadas según la asimetría presentada en sus boxplots y histogramas.
 
-El problema está en que hay una cantidad abudante de valores que se encuentran fuera del intervalo [Q1,Q3], reflejado en los boxplots como puntos, y estos són detectados como outliers incorrectamene. Una posible solución seria escalar estas variables.
+El problema está en que hay una cantidad abudante de valores que se encuentran fuera del intervalo [Q1,Q3], reflejado en los boxplots como puntos, y estos son detectados como outliers incorrectamene. Una posible solución serísa escalar estas variables.
 
 ### 4.1.4. Z-Score
 
@@ -621,6 +621,7 @@ plots <- lapply(varNum, function(v) hist_z3(datos[[v]], v))
 wrap_plots(plots, ncol = 4) + plot_annotation(title = "Histogramas (z-score)")
 
 ```
+
 ```{r}
 library(tidyr)
 
@@ -692,11 +693,11 @@ tabla_resumen_z3
 # head(tabla_detalle_z3)  # si solo quieres una vista
 ```
 
-Vemos que con este escalado parece que hemos solucionado el problema que teniamos con la detección de outliers via IQR. Ahora tenemos outliers en 7 de las 10 variables y en todos suponen menos del 6% de las observaciones y menos de 2% en todos menos en los 2 con mas valores anómalos.
+Vemos que con este escalado parece que hemos solucionado el problema que teníamos con la detección de outliers vía IQR. Ahora tenemos outliers en 7 de las 10 variables y en todos suponen menos del 6% de las observaciones y menos de 2% en todos menos en los 2 con más valores anómalos.
 
 ### 4.1.5. Hampel Identifier
 
-Utilizamos la mediana y la desviación absoluta meidana en vez de la media.
+Utilizamos la mediana y la desviación absoluta mediana en vez de la media.
 
 ```{r}
 # Función para detectar outliers con Hampel
@@ -756,9 +757,10 @@ tabla_resumen_hampel        # resumen por variable
 # head(tabla_detalle_hampel)  # detalle de los outliers (índices y valores)
 
 ```
+
 Este método queda descartado para nuestra base de datos ya que se detecta como outlier más del 20% de las observaciones en cuatro variables y más del 5 en 8 de ellas. 
 
-Ademmás, antes de su aplicación ya intuiamos que no iba a resultar productivo este metodo ya que operar con la mediana y la desvación absoluta mediana en distribuciones asimétricas no es compatible.
+Ademmás, antes de su aplicación ya intuíamos que no iba a resultar productivo este método, ya que operar con la mediana y la desvación absoluta mediana en distribuciones asimétricas no es compatible.
 
 ### 4.1.6. Statistics Tests
 
@@ -766,7 +768,8 @@ Ademmás, antes de su aplicación ya intuiamos que no iba a resultar productivo 
 
 Detección de valores extremos en distribuciones Gaussianas.
 
-Por lo tanto, primero estudiamos que variables admiten este test.
+Por lo tanto, primero estudiamos qué variables admiten este test.
+
 ```{r}
 library(nortest)  
 
@@ -796,19 +799,19 @@ No hay ninguna variable que acepte este test, ya que en todas no se puede asumir
 
 #### 4.1.6.2. Dixon's Test
 
-Este test también queda descartado ya que solo es posible aplicarlo en bbdd pequeñas de entre 3 y 30 observaciones. Teniendo 13186 observaciones el uso de esta prueba no es viable.
+Este test también queda descartado ya que solo es posible aplicarlo en BBDD pequeñas de entre 3 y 30 observaciones. Teniendo 13186 observaciones el uso de esta prueba no es viable.
 
 #### 4.1.6.3. Rosner's Test
 
 Este test parece ser aplicable ya que es aplicable para muestras grandes y además cuenta con la ventaja de la detección múltiple de valores atípicos. No obstante, este asume normalidad en los datos y ya hemos comprobado que ninguna variable la cumple en el primer subapartado de esta sección. 
 
-Por lo tanto, no hemos podido aplicar ninguno de los tests en nuestra bbdd pero hemos concluido de este apartado que contamos con distribuciones no normales.
+Por lo tanto, no hemos podido aplicar ninguno de los tests en nuestra BBDD, pero hemos concluido de este apartado que contamos con distribuciones no normales.
 
 ### 4.1.7. Conclusiones
 
-Después de haber aplicado todos los métodos de tratamiento de valores anomalos en nuestra base de datos hemos visto que con las tres primeras secciones detectabamos muchos outliers incorrectamente debido a problmas de asimetria y de escala.
+Después de haber aplicado todos los métodos de tratamiento de valores anómalos en nuestra base de datos hemos visto que con las tres primeras secciones detectábamos muchos outliers incorrectamente debido a problemas de asimetría y de escala.
 
-Ha sido al escalar las variables (Z-Score) cuando hemos podido recoger un conjunto de posibles valores atípicos más coherente en el que poder imputar aquellos que concluyamos como outliers definitivos. Estos estan guardados con su respectivos ID y variable correspondiente en tabla_detalle_z3.
+Ha sido al escalar las variables (*Z-Score*) cuando hemos podido recoger un conjunto de posibles valores atípicos más coherente en el que poder imputar aquellos que concluyamos como outliers definitivos. Estos estan guardados con su respectivos ID y variable correspondiente en $tabla_detalle_z3$.
 
 ```{r}
 head(tabla_detalle_z3,6)
@@ -817,7 +820,8 @@ table(tabla_detalle_z3$variable)
 
 ## 4.2. Multivariate
 
-Scatter plot de los trios de variable más interesantes (correlacionados):
+Scatter plot de los tríos de variable más interesantes (correlacionados):
+
 ```{r}
 library(scatterplot3d)
 
@@ -863,7 +867,9 @@ for (tri in top_trios) {
 }
 
 ```
-Hacemos el gafico interactivo 3D para el unico trio que presenta una correlación conjunta superior a 0.5 (loudness, energy, acousticness)
+
+Hacemos el gráfico interactivo 3D para el único trío que presenta una correlación conjunta superior a 0.5 ($loudness, energy, acousticness$)
+
 ```{r, warning=FALSE}
 library(plotly)
 
@@ -872,7 +878,8 @@ library(plotly)
 ```
 ### 4.2.1. Caso general
 
-Como contamos con una matriz de covarianza singular con colinealidad fuerte entre algunas de nuestras variables, debemos aplicar fallback a PCA en vez de la forma común dada en la teoria:
+Como contamos con una matriz de covarianza singular con colinealidad fuerte entre algunas de nuestras variables, debemos aplicar fallback a PCA en vez de la forma común dada en la teoría:
+
 ```{r}
 library(mvoutlier)
 
@@ -932,23 +939,26 @@ distances <- dd_with_fallback(Xc, quan = 1/2, alpha = 0.025)
 
 ```
 
-Las observaciones distribuidas en la rectangulo inferior izquierdo del dd plot són aquellas observaciónes con valores bajos en ambas distancias (no outliers).
+Las observaciones distribuidas en el rectángulo inferior izquierdo del dd plot son aquellas observaciones con valores bajos en ambas distancias (no outliers).
 
-Los que se encuentran en la parte superior izquierda, al contar con un valor de distancia robusta alto, són outliers robustos con una fuerte influencia.
+Los que se encuentran en la parte superior izquierda, al contar con un valor de distancia robusta alto, son outliers robustos con una fuerte influencia.
 
-Todos aquellos que se encuentran en el lado derecho de la linea vertica central són aquellos llamados "leverage points", observaciones que influyen mucho en la covarianza clásica.
+Todos aquellos que se encuentran en el lado derecho de la línea vertica central son aquellos llamados "leverage points", observaciones que influyen mucho en la covarianza clásica.
 
 Ahora, obtenemos los índices de aquellos puntos considerados outliers según las anteriores características.
+
 ```{r}
 outliers<-distances$outliers
 indOut<-which(outliers==TRUE)
 indOut # 141 outliers
 ```
 
-Visualizamos todos los outliers detectados como true
+Visualizamos todos los outliers detectados como $true$
+
 ```{r}
 head(distances$md.cla)
 ```
+
 ```{r}
 head(distances$md.rob)
 ```
@@ -956,14 +966,17 @@ head(distances$md.rob)
 ```{r}
 head(outliers)
 ```
+
 ```{r}
 table(outliers)
 ```
+
 ```{r}
 distances_df<-as.data.frame(distances)
 distances_df<-distances_df[order(-distances_df$md.rob),]
 head(distances_df,10)
 ```
+
 ```{r}
 p <- 10   
 alpha <- 0.025
@@ -978,11 +991,11 @@ plot(distances_df$md.rob,
 abline(h = umbral, col = "red", lwd = 2, lty = 2)
 ```
 
-PROBLEMA: Con este metodo solo me deja calcular las distancias de observaciones sin NA's (376). El resto las excluye y solo puedo estudiar valores anomalos dentro de este subconjunto muy pequeño excluyendo las otras 12mil y pico obs.
+*PROBLEMA*: Con este método solo me deja calcular las distancias de observaciones sin NA's (376). El resto las excluye y solo puedo estudiar valores anomalos dentro de este subconjunto muy pequeño excluyendo las otras 12mil y pico obs.
 
 ### 4.2.2. PCA
 
-Hay metodos basados en correlaciones que nos permiten detectar outliers. De momento no los ejecutaremos pero que sepamos que exite esa posibilidad en caso de encontrar dificultades si concluimos que nuestras variables regressoras presentan problemas de multicol·linealidad. Hasta ahora no lo parece.
+Hay métodos basados en correlaciones que nos permiten detectar outliers. De momento no los ejecutaremos, pero que sepamos que exite esa posibilidad en caso de encontrar dificultades si concluimos que nuestras variables regressoras presentan problemas de multicolinealidad. Hasta ahora no lo parece.
 
 ### 4.2.3. Distancia de Mahalanobis 
 
@@ -990,11 +1003,12 @@ Hay metodos basados en correlaciones que nos permiten detectar outliers. De mome
 distancia_mahalanobis <- mahalanobis(datos[,varNum], colMeans(datos[,varNum]), cov(datos[,varNum]))
 summary(distancia_mahalanobis)
 ```
-Como vemos tenemos problemas de calculo con la distancia de mahalanobis debido a la cantidad de NA's que tenemos en nuestra bbdd. Haremos este metodo más adelante cuando Dante nos guie en si usar algun tipo de metodo de imputacion de NA's previo para calcular estas distancias.
+
+Como vemos tenemos problemas de cálculo con la distancia de Mahalanobis debido a la cantidad de NA's que tenemos en nuestra BBDD. Haremos este método más adelante cuando Dante nos guie en si usar algun tipo de metodo de imputacion de NA's previo para calcular estas distancias.
 
 ### 4.2.4. Regresió Lineal i residus 
 
-Un punto con un residuo grande puede considerarse un valor anomalo.
+Un punto con un residuo grande puede considerarse un valor anómalo.
 
 ### 4.2.5. Distancia de Cook
 
@@ -1006,7 +1020,8 @@ Podemos calcular las distancias de Cook para discriminar como outliers aquellas 
 library(adamethods)
 res_knn<-do_knno(datos[,varNum], k=1, top_n=100)
 ```
-Con este metodo conseguimos el identificador de las 100 observaciones con un outliers scoore mas alto.
+
+Con este método conseguimos el identificador de las 100 observaciones con un outliers scoore mas alto.
 
 ```{r}
 ## --- Parámetros ---
