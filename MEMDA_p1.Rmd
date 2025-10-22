@@ -1,7 +1,7 @@
 ---
 title: "proyecto regression"
-author: "vega carmona"
-date: "2025-09-30"
+author: "Erik Bola, Vega Carmona, Emma Carretero, Sandra González y Raquel Purroy"
+date: 
 output:
   html_document: default
   pdf_document: default
@@ -621,6 +621,7 @@ plots <- lapply(varNum, function(v) hist_z3(datos[[v]], v))
 wrap_plots(plots, ncol = 4) + plot_annotation(title = "Histogramas (z-score)")
 
 ```
+
 ```{r}
 library(tidyr)
 
@@ -1330,8 +1331,105 @@ cat("[6] Imputación realizada con mediana (num) y moda (factor) usando TRAIN.\n
 preds_final <- setdiff(names(train_imp), c("ID", "song_popularity"))
 cat("[7] Predictores finales:", length(preds_final), "\n")
 ```
+```{r}
+library(mice)
+tempData <- mice(datos,m=5,maxit=50,meth='pmm',seed=500)
+```
 
 
+# 6. Feature engineering
+
+## 6.1 Feature selection
+
+### 6.1.1 Null variance
+
+Se identifican aquellas variables cuya varianza es prácticamente o completamente nula, ya que, al tener valores muy similares entre ellos, se consideran constantes y pueden estar altamente correlacionadas con el término independiente del modelo, lo que solo introduciría ruido.  
+
+```{r, warning=FALSE}
+library(caret)
+# install.packages("idealista18")
+require(idealista18)
+library(tidyverse)
+
+numeric_cols <- sapply(datos, is.numeric)
+datos_num <- datos[, numeric_cols]
+# ncol(datos_num); ncol(datos)
+varianza <- nearZeroVar(datos_num, saveMetrics = T)
+varianza
+```
+
+
+Esta salida muestra que no hay ninguna variable con varianza exactamente igual a cero ni cercana a 0, lo cual indica que no hay necesidad de eliminar ninguna variable por falta de información. Sin embargo, las variables referentes a $liveness$, $danceability$, $audio_valence$, $energy$, $speechiness$ y, especialmente, $time_signature$, $key$, $audio_mode$ y $song_popularity$, tienen un *percentUnique* relativamente bajo, dando a entender que tienen pocos valores distintos. 
+
+### 6.1.2 Feature correlation
+
+Una manera alternativa de mirar si hay variables redundantes es mediante la correlación entre las variables predictores. Un coeficiente alto de correlación puede generar un problema de multicolinealidad, que puede afectar negativamente a las predicciones del modelo. Anteriormente, mediante un gráfico den correlaciones entre las variables numéricas, se observó una elevada correlación entre **acousticness** y **loudness**, **instrumentalness** y **loudness**, **loudness** y **energy**, **acousticness** y **energy**.
+
+Se pretende encontrar correlaciones que superen un coeficiente de 0.6:
+```{r, warning=FALSE}
+datos_cor <- cor(na.omit(datos_num))
+(alta_cor <- findCorrelation(datos_cor, cutoff = 0.6))
+```
+
+El código apunta que hay 8 correlaciones que superan un valor de 0.6, es decir, hay 4 variables altamente correlacionadas a pares. 
+A través de la visualización del gráfico de correlaciones deducimos de qué variables se trata.
+
+```{r, warning=FALSE}
+library("corrplot")
+
+matriz_corr <- cor(datos_cor)
+corrplot(matriz_corr, method = "circle")
+```
+
+La representación gráfica muestra una evidencia clara de correlación entre las variables previamente mencionadas. Este hecho nos impulsa a eliminar alguna de estas variables que ya están explicadas por otras. 
+
+### 6.1.3 Linear combinations
+
+Identificamos si existen combinaciones lineales entre las variables predictoras, otra medida que nos informa acerca de la posible correlación existente entre ellas. 
+
+```{r}
+datos_num_na <- tidyr::drop_na(datos_num) # Es necesario eliminar los NA.
+(combos <- findLinearCombos(datos_num_na))
+```
+
+Mediante este método, no se detectan combinaciones lineales entre las variables.
+
+### 6.1.4 Wrapper
+
+Se aplica el método **Wrapper** para seleccionar las variables más relevantes del modelo.
+
+```{r}
+# install.packages("caret")
+library(caret)
+
+# Paso 1: Preparar los datos
+datos_num <- datos[, sapply(datos, is.numeric)]
+datos_num <- na.omit(datos_num)
+
+# Separar variable objetivo
+target <- datos_num$song_popularity
+input <- datos_num[, colnames(datos_num) != "song_popularity"]
+
+# Paso 2: Configurar control de RFE
+control <- rfeControl(functions = lmFuncs,  # Usa regresión lineal
+                      method = "cv",        # Validación cruzada
+                      number = 5)           # 5-fold CV
+
+# Paso 3: Ejecutar RFE
+set.seed(123)
+resultados_rfe <- rfe(input, target,
+                      sizes = 1:(ncol(input)),  # Probar con 1 hasta todas las variables
+                      rfeControl = control)
+
+# Paso 4: Ver variables seleccionadas
+print(resultados_rfe$optVariables)
+```
+
+## 6.2 Feature transformation
+
+La transformación de las variables permite cambiar su dominio para facilitar el entendimiento de los datos. En base a la sección anterior ($\text{feature selection}$) se aplicarán las siguientes transformaciones a las siguientes variables:
+
+## 6.3 Feature extraction
 
 
 
