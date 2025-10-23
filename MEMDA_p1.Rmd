@@ -1331,7 +1331,7 @@ cat("[6] Imputación realizada con mediana (num) y moda (factor) usando TRAIN.\n
 preds_final <- setdiff(names(train_imp), c("ID", "song_popularity"))
 cat("[7] Predictores finales:", length(preds_final), "\n")
 ```
-```{r}
+```{r, warning=FALSE, include=FALSE}
 library(mice)
 tempData <- mice(datos,m=5,maxit=50,meth='pmm',seed=500)
 ```
@@ -1359,11 +1359,11 @@ varianza
 ```
 
 
-Esta salida muestra que no hay ninguna variable con varianza exactamente igual a cero ni cercana a 0, lo cual indica que no hay necesidad de eliminar ninguna variable por falta de información. Sin embargo, las variables referentes a $liveness$, $danceability$, $audio_valence$, $energy$, $speechiness$ y, especialmente, $time_signature$, $key$, $audio_mode$ y $song_popularity$, tienen un *percentUnique* relativamente bajo, dando a entender que tienen pocos valores distintos. 
+Esta salida muestra que no hay ninguna variable con varianza exactamente igual a cero ni cercana a 0, lo cual indica que no hay necesidad de eliminar ninguna variable por falta de información. Sin embargo, las variables referentes a $liveness$, $danceability$, $audio_valence$, $energy$, $speechiness$ y, especialmente, $time_signature$, $key$ y $audio_mode$, tienen un *percentUnique* relativamente bajo, dando a entender que tienen pocos valores distintos. 
 
 ### 6.1.2 Feature correlation
 
-Una manera alternativa de mirar si hay variables redundantes es mediante la correlación entre las variables predictores. Un coeficiente alto de correlación puede generar un problema de multicolinealidad, que puede afectar negativamente a las predicciones del modelo. Anteriormente, mediante un gráfico den correlaciones entre las variables numéricas, se observó una elevada correlación entre **acousticness** y **loudness**, **instrumentalness** y **loudness**, **loudness** y **energy**, **acousticness** y **energy**.
+Una manera alternativa de mirar si hay variables redundantes es calculando la correlación entre las variables predictoras. Un coeficiente alto de correlación puede generar un problema de multicolinealidad, que puede afectar negativamente a las predicciones del modelo. Anteriormente, mediante un gráfico den correlaciones entre las variables numéricas, se observó una elevada correlación entre **acousticness** y **loudness**, **instrumentalness** y **loudness**, **loudness** y **energy**, **acousticness** y **energy**.
 
 Se pretende encontrar correlaciones que superen un coeficiente de 0.6:
 ```{r, warning=FALSE}
@@ -1371,7 +1371,7 @@ datos_cor <- cor(na.omit(datos_num))
 (alta_cor <- findCorrelation(datos_cor, cutoff = 0.6))
 ```
 
-El código apunta que hay 8 correlaciones que superan un valor de 0.6, es decir, hay 4 variables altamente correlacionadas a pares. 
+Hay 8 correlaciones que superan un valor de 0.6, es decir, hay 4 variables altamente correlacionadas a pares. 
 A través de la visualización del gráfico de correlaciones deducimos de qué variables se trata.
 
 ```{r, warning=FALSE}
@@ -1387,18 +1387,18 @@ La representación gráfica muestra una evidencia clara de correlación entre la
 
 Identificamos si existen combinaciones lineales entre las variables predictoras, otra medida que nos informa acerca de la posible correlación existente entre ellas. 
 
-```{r}
+```{r, warning=FALSE}
 datos_num_na <- tidyr::drop_na(datos_num) # Es necesario eliminar los NA.
-(combos <- findLinearCombos(datos_num_na))
+(combos <- findLinearCombos(datos_num_na[,-c(1,13)]))
 ```
 
-Mediante este método, no se detectan combinaciones lineales entre las variables.
+Mediante este método, no se detectan combinaciones lineales entre las variables. Esto conlleva a deducir que no hay ninguna variable que contenga esencialmente la misma información que otra desde una perspectiva lineal.
 
 ### 6.1.4 Wrapper
 
 Se aplica el método **Wrapper** para seleccionar las variables más relevantes del modelo.
 
-```{r}
+```{r, warning=FALSE}
 # install.packages("caret")
 library(caret)
 
@@ -1410,7 +1410,17 @@ datos_num <- na.omit(datos_num)
 target <- datos_num$song_popularity
 input <- datos_num[, colnames(datos_num) != "song_popularity"]
 
-# Paso 2: Configurar control de RFE
+# Eliminar variables altamente correlacionadas (correlación > 0.6)
+matriz_cor <- cor(input)
+variables_redundantes <- findCorrelation(matriz_cor, cutoff = 0.6)
+cat("Variables eliminadas por alta correlación:", length(variables_redundantes), "\n")
+
+if(length(variables_redundantes) > 0) {
+  input <- input[, -variables_redundantes]
+  cat("Variables restantes después de filtrar correlación:", ncol(input), "\n")
+}
+
+# Paso 2: Configurar control de RFE (técnica para seleccionar las mejores variables eliminando iterativamente las menos importantes)
 control <- rfeControl(functions = lmFuncs,  # Usa regresión lineal
                       method = "cv",        # Validación cruzada
                       number = 5)           # 5-fold CV
@@ -1425,15 +1435,311 @@ resultados_rfe <- rfe(input, target,
 print(resultados_rfe$optVariables)
 ```
 
+La técnica de Eliminación Recursiva de Características (*RFE: Recursive Feature Elimination*) es un tipo de método **Wrapper** que selecciona las variables más relevantes para un modelo entrenándolo varias veces mediante un proceso de validación cruzada y eliminando en cada iteración las variables menos importantes. El algoritmo termina hasta encontrar el subconjunto que ofrece el mejor rendimiento. Cabe destacar que dicho método ha tenido en cuenta la correlación entre las variables predictoras. De esta manera, se ha obtenido un conjunto de variables explicativas que no superan un coeficiente de correlación de 0,6. 
+Estas variables son: $danceability$, $audio_valence$, $speechiness$, $liveness$, $instrumentalness$, $acousticness$ y $loudness$.
+
+
+
+El análisis exhaustivo de selección de variables reveló un **conjunto óptimo** de **7 predictores** para el modelo de popularidad musical. Tras eliminar variables redundantes por alta correlación (> 0.6), el método **Wrapper RFE** identificó las características más relevantes: $danceability$, $audio_valence$, $speechiness$, $liveness$, $instrumentalness$, $acousticness$ y $loudness$. Este conjunto representa una reducción del 46% en dimensionalidad mientras mantiene el poder predictivo, asegurando la estabilidad del modelo mediante la eliminación de multicolinealidad.
+
+
 ## 6.2 Feature transformation
 
-La transformación de las variables permite cambiar su dominio para facilitar el entendimiento de los datos. En base a la sección anterior ($\text{feature selection}$) se aplicarán las siguientes transformaciones a las siguientes variables:
+El objetivo de este apartado es mejorar la distribución de las variables, reducir el sesgo y preparar los datos para los algoritmos de modelado.
+
+### 6.2.1 Análisis inicial de distribuciones
+
+```{r transformacion_variables, warning=FALSE}
+library(caret)
+library(e1071)
+library(recipes)
+library(tidyverse)
+
+# Usar el dataset con las variables seleccionadas del paso anterior
+# Asumimos que tenemos: datos_final con las 7 variables seleccionadas
+
+cat("ANÁLISIS INICIAL DE DISTRIBUCIONES Y SESGO:\n")
+
+# Función para calcular estadísticas de sesgo
+analizar_sesgo <- function(datos) {
+  skewness_values <- sapply(datos, function(x) {
+    if(is.numeric(x)) {
+      sesgo <- e1071::skewness(x, na.rm = TRUE)
+      tipo_sesgo <- ifelse(abs(sesgo) > 1, "ALTO SESGO",
+                          ifelse(abs(sesgo) > 0.5, "SESGO MODERADO", "BAJO SESGO"))
+      return(c(Sesgo = round(sesgo, 3), Tipo = tipo_sesgo))
+    } else {
+      return(c(Sesgo = NA, Tipo = "NO NUMÉRICA"))
+    }
+  })
+  
+  t(skewness_values) %>% as.data.frame() %>% 
+    rownames_to_column("Variable")
+}
+
+# Aplicar análisis de sesgo a nuestras variables seleccionadas
+variables_seleccionadas <- c("danceability", "audio_valence", "speechiness", 
+                            "liveness", "instrumentalness", "acousticness", "loudness")
+
+datos_transformar <- datos_num[, variables_seleccionadas]
+resultados_sesgo <- analizar_sesgo(datos_transformar)
+print(resultados_sesgo)
+```
+
+Mientras que las variables correspondientes a $danceability$ y $audio_valence$ presentan un sesgo bajo, el resto de variables obtienen un valor de sesgo potencialmente alto, a excepción de la variable $acousticness$, donde el sesgo es moderado. 
+
+### 6.2.2 Visualización de distribuciones originales
+
+```{r, warning=FALSE}
+cat("\n VISUALIZACIÓN DE DISTRIBUCIONES ORIGINALES:\n")
+
+# Función para graficar distribuciones
+graficar_distribuciones <- function(datos, titulo) {
+  datos_long <- datos %>%
+    pivot_longer(everything(), names_to = "Variable", values_to = "Valor")
+  
+  ggplot(datos_long, aes(x = Valor)) +
+    geom_histogram(aes(y = ..density..), fill = "steelblue", alpha = 0.7, bins = 30) +
+    geom_density(color = "red", linewidth = 1) +
+    facet_wrap(~ Variable, scales = "free") +
+    labs(title = titulo,
+         x = "Valor", y = "Densidad") +
+    theme_minimal()
+}
+
+# Graficar distribuciones originales
+graficar_distribuciones(datos_transformar, "Distribuciones Originales - Antes de Transformación")
+```
+
+### 6.2.3 Aplicación de las transformaciones
+
+```{r aplicacion_transformaciones, warning=FALSE}
+# Identificar variables que necesitan transformación (|sesgo| > 0.5)
+variables_a_transformar <- resultados_sesgo %>%
+  filter(Tipo %in% c("ALTO SESGO", "SESGO MODERADO")) %>%
+  pull(Variable)
+
+cat("VARIABLES A TRANSFORMAR (|sesgo| > 0.5):\n")
+print(variables_a_transformar)
+
+# Aplicar diferentes transformaciones
+datos_transformados <- datos_transformar
+
+for(var in variables_a_transformar) {
+  if(var %in% colnames(datos_transformados)) {
+    
+    # Obtener valores mínimos para ajustar transformaciones
+    min_val <- min(datos_transformados[[var]], na.rm = TRUE)
+    
+    # Aplicar transformaciones según el tipo de variable
+    if(min_val >= 0) {
+      # Para variables con valores positivos
+      datos_transformados[[paste0(var, "_log")]] <- log1p(datos_transformados[[var]])
+      datos_transformados[[paste0(var, "_sqrt")]] <- sqrt(datos_transformados[[var]])
+      
+      # Transformación Box-Cox (requiere valores estrictamente positivos)
+      if(min_val > 0) {
+        bc_transform <- BoxCoxTrans(datos_transformados[[var]])
+        datos_transformados[[paste0(var, "_boxcox")]] <- predict(bc_transform, datos_transformados[[var]])
+      }
+    }
+    
+  }
+}
+
+cat("TRANSFORMACIONES APLICADAS:\n")
+cat("Variables originales:", ncol(datos_transformar), "\n")
+```
+
+Las variables con sesgo alto (mayor que 0.5 en valor absoluto), son: $speechiness$, $liveness$, $instrumentalness$, $acousticness$ y $loudness$. Se aplican 3 transformaciones a cada una:
+
+  **1.** `log`: Permite reducir el sesgo positivo fuerte y funciona mejor cuando hay valores extremos positivos.
+  
+  **2.** `sqrt`: Se usa especialmente cuando el sesgo es moderado, y es menos agresiva que log, pero buena para datos con ceros.
+
+  **3.** `box-cox`: Encuentra la transformación óptima automáticamente, con el requisito de que los valores sean estrictamente positivos. 
+
+```{r}
+any(datos_transformados$instrumentalness==0)
+```
+
+Dado que $instrumentalness$ contiene algún valor igual a 0, se han aplicado solo las dos primeras transformaciones. 
+
+### 6.2.4 Evaluación de Transformaciones
+
+A continuación, se realiza una evaluativa 
+
+```{r evaluacion_transformaciones, warning=FALSE}
+# Función para evaluar efectividad de transformaciones
+evaluar_transformaciones <- function(var_original, vars_transformadas, nombre_original) {
+  resultados <- data.frame()
+  
+  sesgo_original <- e1071::skewness(var_original, na.rm = TRUE)
+  
+  for(transform_name in names(vars_transformadas)) {
+    if(transform_name != nombre_original) {
+      var_transformada <- vars_transformadas[[transform_name]]
+      sesgo_transformado <- e1071::skewness(var_transformada, na.rm = TRUE)
+      
+      reduccion_sesgo <- abs(sesgo_original) - abs(sesgo_transformado)
+      
+      resultados <- rbind(resultados, data.frame(
+        Variable = nombre_original,
+        Transformacion = transform_name,
+        Sesgo_Original = round(sesgo_original, 3),
+        Sesgo_Transformado = round(sesgo_transformado, 3),
+        Reduccion_Sesgo = round(reduccion_sesgo, 3),
+        Efectiva = ifelse(abs(sesgo_transformado) < abs(sesgo_original) & 
+                          abs(sesgo_transformado) < 1, "SÍ", "NO")
+      ))
+    }
+  }
+  
+  return(resultados)
+}
+
+# Evaluar todas las transformaciones
+resultados_evaluacion <- data.frame()
+
+for(var in variables_a_transformar) {
+  # Obtener todas las versiones de la variable
+  vars_relacionadas <- datos_transformados %>% 
+    select(starts_with(var))
+  
+  eval_var <- evaluar_transformaciones(
+    datos_transformar[[var]], 
+    vars_relacionadas,
+    var
+  )
+  
+  resultados_evaluacion <- rbind(resultados_evaluacion, eval_var)
+}
+
+cat("EVALUACIÓN DE TRANSFORMACIONES:\n")
+print(resultados_evaluacion)
+
+# Seleccionar la mejor transformación para cada variable
+mejores_transformaciones <- resultados_evaluacion %>%
+  filter(Efectiva == "SÍ") %>%
+  group_by(Variable) %>%
+  filter(abs(Sesgo_Transformado) == min(abs(Sesgo_Transformado))) %>%
+  ungroup()
+
+cat("\n MEJORES TRANSFORMACIONES SELECCIONADAS:\n")
+print(mejores_transformaciones)
+```
+
+
+El análisis de transformaciones reveló que **Box-Cox** fue **óptima** para **variables** con **alto sesgo** ($speechiness$, $liveness$), logrando reducciones superiores al 90%, mientras que la **raíz cuadrada** resultó más **efectiva** para **sesgos moderados** ($acousticness$). En cambio, para la variable $instrumentalness$ no se salió efectiva ninguna de las dos modificaciones aplicadas. 
+Las transformaciones seleccionadas aseguran que todas las variables cumplan con $|sesgo| < 0.5$, mejorando significativamente los supuestos de normalidad para el modelado posterior.
 
 ## 6.3 Feature extraction
 
+### 6.3.1 Preparar datos para PCA
+
+```{r extraccion_variables, warning=FALSE}
+# INSTALAR Y CARGAR LIBRERÍAS
+# install.packages(c("FactoMineR", "factoextra", "nFactors"))
+library(FactoMineR)
+library(factoextra)
+library(nFactors)
+
+cat("COMIENZO EXTRACCIÓN DE VARIABLES\n")
+cat("===================================\n\n")
 
 
+cat("1. PREPARANDO DATOS PARA ANÁLISIS...\n")
 
+# Usar las 7 variables óptimas del método RFE (con las transformaciones aplicadas)
+variables_para_analisis <- c("danceability", "audio_valence", "speechiness", "liveness", 
+                             "instrumentalness", "acousticness", "loudness")
+
+# Crear dataset solo con estas variables (excluir objetivo)
+datos_analisis <- datos_transformados[, variables_para_analisis]
+
+# Estandarizar (importante para PCA)
+datos_estandarizados <- scale(datos_analisis)
+
+cat("   • Variables analizadas:", paste(variables_para_analisis, collapse = ", "), "\n")
+cat("   • Dimensiones datos:", dim(datos_estandarizados), "\n\n")
+```
+
+Se estudian las 7 variables que el método **Wrapper** había proporcionado como conjunto óptimo, pero teniendo en cuenta la transformación de las 3 variables anteriores. 
+
+### 6.3.2 Análisis de Componentes Principales (PCA)
+
+```{r, warning=FALSE}
+cat("2. EJECUTANDO ANÁLISIS DE COMPONENTES PRINCIPALES...\n")
+
+pca_resultado <- prcomp(datos_estandarizados, scale. = TRUE)
+
+# Resumen simple
+cat("   • PCA completado\n")
+cat("   • Número de componentes:", length(pca_resultado$sdev), "\n\n")
+```
+
+Dado que se disponen de 7 variables, existen 7 componentes principales. 
+
+### 6.3.3 Determinar Componentes Principales
+
+```{r, warning=FALSE}
+cat("3. IDENTIFICANDO COMPONENTES IMPORTANTES...\n")
+
+# Calcular varianza explicada
+varianza_explicada <- pca_resultado$sdev^2 / sum(pca_resultado$sdev^2) * 100
+
+# Mostrar varianza por componente
+cat("   Varianza explicada por componente:\n")
+for(i in 1:length(varianza_explicada)) {
+  cat("   • PC", i, ": ", round(varianza_explicada[i], 1), "%\n", sep = "")
+}
+
+# Regla simple: componentes que explican >10% de varianza
+componentes_importantes <- which(varianza_explicada > 10)
+cat("\n   • Componentes que explican >10% varianza: PC", 
+    paste(componentes_importantes, collapse = ", PC"), "\n", sep = "")
+```
+
+El **análisis** de **componentes principales** sobre las **7 variables óptimas** revela una estructura dimensional bien definida. Los primeros **5 componentes** explican individualmente **más del 10% de la varianza**, acumulando **86.7%** de la **información total**.
+
+PC1 (29%) emerge como la dimensión principal, capturando casi un tercio de la variabilidad del conjunto de datos. La **distribución gradual** de la **varianza** entre los componentes indica que **ninguna** **variable** **domina** excesivamente el **análisis**, sino que **todas** **contribuyen** de manera **balanceada** a las diferentes dimensiones latentes.
+
+Este resultado confirma que las **7 variables seleccionadas** por **RFE** contienen información complementaria y valiosa para el modelo, justificando la retención de múltiples componentes que capturan distintas facetas de las características musicales relevantes para predecir la popularidad.
+
+### 6.3.4 Crear nuevas variables (componentes)
+
+Se crean las nuevas variables, las cuales corresponden a las 5 primeras componentes principales, que no son más que combinaciones lineales de las variables originales. 
+
+```{r, warning=FALSE}
+cat("\n4. CREANDO NUEVAS VARIABLES...\n")
+
+if(length(componentes_importantes) > 0) {
+  # Extraer scores de componentes importantes
+  nuevos_componentes <- as.data.frame(pca_resultado$x[, componentes_importantes])
+  
+  # Dar nombres descriptivos
+  nombres_descriptivos <- c()
+  for(i in 1:length(componentes_importantes)) {
+    nombre <- paste0("Componente_", i)
+    nombres_descriptivos <- c(nombres_descriptivos, nombre)
+  }
+  colnames(nuevos_componentes) <- nombres_descriptivos
+  
+  # Añadir al dataset original
+  datos_final <- cbind(datos_final_transformado, nuevos_componentes)
+  
+  cat("   • Nuevas variables creadas:", paste(nombres_descriptivos, collapse = ", "), "\n")
+  cat("   • Total variables en dataset final:", ncol(datos_final), "\n\n")
+  
+} else {
+  datos_final <- datos_final_transformado
+  cat("   • No se crearon nuevos componentes (poca varianza explicada)\n\n")
+}
+```
+
+El **proceso de extracción** logró una compresión **eficiente** (86.3% de varianza con 5 componentes). 
+
+Las variables seleccionadas son: $\text{speechiness_boxcox, liveness_boxcox, acousticness_sqrt, danceability, audio_valence, speechiness, y loudness}$.
 
 
 
