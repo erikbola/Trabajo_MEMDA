@@ -10,8 +10,11 @@ output:
 ```{r setup, include=FALSE}
 # Paquetes básicos que usas
 library(tidyverse)   # incluye ggplot2 y dplyr (%>%)
+install.packages("DataExplorer")
 library(DataExplorer)
+install.packages("inspectdf")
 library(inspectdf)
+install.packages("skimr")
 library(skimr)
 library(SmartEDA)
 library(naniar)
@@ -1639,7 +1642,7 @@ Las transformaciones seleccionadas aseguran que todas las variables cumplan con 
 
 ```{r extraccion_variables, warning=FALSE}
 # INSTALAR Y CARGAR LIBRERÍAS
-# install.packages(c("FactoMineR", "factoextra", "nFactors"))
+#install.packages(c("FactoMineR", "factoextra", "nFactors"))
 library(FactoMineR)
 library(factoextra)
 library(nFactors)
@@ -1726,7 +1729,7 @@ if(length(componentes_importantes) > 0) {
   colnames(nuevos_componentes) <- nombres_descriptivos
   
   # Añadir al dataset original
-  datos_final <- cbind(datos_final_transformado, nuevos_componentes)
+  datos_final <- cbind(datos_transformados, nuevos_componentes)
   
   cat("   • Nuevas variables creadas:", paste(nombres_descriptivos, collapse = ", "), "\n")
   cat("   • Total variables en dataset final:", ncol(datos_final), "\n\n")
@@ -1739,8 +1742,90 @@ if(length(componentes_importantes) > 0) {
 
 El **proceso de extracción** logró una compresión **eficiente** (86.3% de varianza con 5 componentes). 
 
-Las variables seleccionadas son: $\text{speechiness_boxcox, liveness_boxcox, acousticness_sqrt, danceability, audio_valence, speechiness, y loudness}$.
+Las variables seleccionadas son: $\text{speechiness_boxcox, liveness_boxcox, acousticness_sqrt, danceability, audio_valence y loudness}$.
+
+# KNN
+
+Base de datos con las variables seleccionadas y sus transformaciones
+```{r}
+datos_prepro<-datos_final[,c("speechiness_boxcox", "liveness_boxcox", "acousticness_sqrt", "danceability", "audio_valence", "loudness")]
+datos_prepro$song_popularity<-datos_num$song_popularity
+# View(datos_prepro)
+```
 
 
+### Elección del valor óptimo de k
+```{r}
+library(FNN)
+set.seed(1994)
 
+# División del conjunto
+default_idx <- sample(nrow(datos_prepro), nrow(datos_prepro) * 0.7)
+datos <- datos_prepro
+
+train <- datos[default_idx, ]
+test  <- datos[-default_idx, ]
+
+X_train <- train[, -7]
+X_test  <- test[, -7]
+y_train <- train[, 7]
+y_test  <- test[, 7]
+
+# Convertimos todo a numérico
+X_train <- data.frame(lapply(X_train, as.numeric))
+X_test  <- data.frame(lapply(X_test, as.numeric))
+
+# Predicción simple con k = 1
+pred <- knn.reg(train = X_train, test = X_test, y = y_train, k = 1)
+head(pred$pred)
+
+# Función para calcular RMSE
+rmse <- function(actual, predicted) {
+  sqrt(mean((actual - predicted)^2))
+}
+
+# Vector de valores de k a probar
+k <- c(1,3,5,7,9,11,13,15,17,19)   # puedes ampliar si quieres
+
+# Calcular RMSE para cada k
+rmse_values <- sapply(k_values, function(k) {
+  make_knn_pred(k = k,
+                training = X_train,
+                predicting = X_test,
+                valueTarget = y_train,
+                actual = y_test)
+})
+
+# Mostrar los resultados
+data.frame(k = k_values, RMSE = rmse_values)
+
+# Encontrar el k con menor RMSE
+best_k <- k_values[which.min(rmse_values)]
+best_rmse <- min(rmse_values)
+
+cat("Mejor k:", best_k, "\nRMSE mínimo:", best_rmse, "\n")
+```
+
+Hemos probado valores impares para k, concretamente: 1,3,5,7,9,11,13,15,17,19 y hemos visto que para k=5 el *rmse* es mínimo. 
+
+### Modelo con k óptimo 
+
+```{r}
+modelo_knn <- knn.reg(train = X_train, test = X_test, y = y_train, k = 5)
+yp <- modelo_knn$pred
+y  <- y_test
+
+# --- Cálculo de errores ---
+e1 <- (y - yp)^2
+e2 <- abs(y - yp)
+
+# --- RMSE final ---
+rmse <- sqrt(mean(e1))
+cat("RMSE del modelo con k =", 5, ":", rmse, "\n")
+```
+
+**Cálculo del MAPE**
+```{r}
+
+```
 
