@@ -1356,6 +1356,7 @@ library(tidyverse)
 
 numeric_cols <- sapply(datos, is.numeric)
 datos_num <- datos[, numeric_cols]
+datos_num<-datos_num[, -1]
 # ncol(datos_num); ncol(datos)
 varianza <- nearZeroVar(datos_num, saveMetrics = T)
 varianza
@@ -1374,8 +1375,7 @@ datos_cor <- cor(na.omit(datos_num))
 (alta_cor <- findCorrelation(datos_cor, cutoff = 0.6))
 ```
 
-Hay 8 correlaciones que superan un valor de 0.6, es decir, hay 4 variables altamente correlacionadas a pares. 
-A través de la visualización del gráfico de correlaciones deducimos de qué variables se trata.
+A través de la visualización del gráfico de correlaciones deducimos qué variables presentan una elevada correlación. 
 
 ```{r, warning=FALSE}
 library("corrplot")
@@ -1636,6 +1636,7 @@ print(mejores_transformaciones)
 El análisis de transformaciones reveló que **Box-Cox** fue **óptima** para **variables** con **alto sesgo** ($speechiness$, $liveness$), logrando reducciones superiores al 90%, mientras que la **raíz cuadrada** resultó más **efectiva** para **sesgos moderados** ($acousticness$). En cambio, para la variable $instrumentalness$ no se salió efectiva ninguna de las dos modificaciones aplicadas. 
 Las transformaciones seleccionadas aseguran que todas las variables cumplan con $|sesgo| < 0.5$, mejorando significativamente los supuestos de normalidad para el modelado posterior.
 
+
 ## 6.3 Feature extraction
 
 ### 6.3.1 Preparar datos para PCA
@@ -1654,8 +1655,8 @@ cat("===================================\n\n")
 cat("1. PREPARANDO DATOS PARA ANÁLISIS...\n")
 
 # Usar las 7 variables óptimas del método RFE (con las transformaciones aplicadas)
-variables_para_analisis <- c("danceability", "audio_valence", "speechiness", "liveness", 
-                             "instrumentalness", "acousticness", "loudness")
+
+variables_para_analisis <- c("danceability", "speechiness_boxcox", "liveness_boxcox", "instrumentalness", "acousticness_sqrt", "loudness", "audio_valence")
 
 # Crear dataset solo con estas variables (excluir objetivo)
 datos_analisis <- datos_transformados[, variables_para_analisis]
@@ -1711,7 +1712,7 @@ Este resultado confirma que las **7 variables seleccionadas** por **RFE** contie
 
 ### 6.3.4 Crear nuevas variables (componentes)
 
-Se crean las nuevas variables, las cuales corresponden a las 5 primeras componentes principales, que no son más que combinaciones lineales de las variables originales. 
+Se crean las nuevas variables, las cuales corresponden a las 5 primeras componentes principales, que no son más que combinaciones lineales de las variables originales. De este modo, se consigue explicar más de un 85% de la variabilidad de $song_popularity$.
 
 ```{r, warning=FALSE}
 cat("\n4. CREANDO NUEVAS VARIABLES...\n")
@@ -1732,7 +1733,6 @@ if(length(componentes_importantes) > 0) {
   datos_final <- cbind(datos_transformados, nuevos_componentes)
   
   cat("   • Nuevas variables creadas:", paste(nombres_descriptivos, collapse = ", "), "\n")
-  cat("   • Total variables en dataset final:", ncol(datos_final), "\n\n")
   
 } else {
   datos_final <- datos_final_transformado
@@ -1740,22 +1740,49 @@ if(length(componentes_importantes) > 0) {
 }
 ```
 
-El **proceso de extracción** logró una compresión **eficiente** (86.3% de varianza con 5 componentes). 
 
-Las variables seleccionadas son: $\text{speechiness_boxcox, liveness_boxcox, acousticness_sqrt, danceability, audio_valence y loudness}$.
+```{r}
+dat<-datos_transformados[,c("speechiness_boxcox", "liveness_boxcox", "acousticness_sqrt", "danceability", "audio_valence", "loudness", "instrumentalness")]
 
-# KNN
+library("corrplot")
+
+matriz_corr <- cor(dat)
+corrplot(matriz_corr, method = "circle")
+```
+
+Dado que en el Análisis de Componentes Principales ha dado como resultado que con **5 componentes principales** se explica más de un 85% de la variabilidad de la variable de respuesta, solo es necesario considerar 5 variables como predictoras. En este gráfico de correlaciones se observa que entre $loudness$ y $acousticness_sqrt$ la correlación sigue siendo bastante elevada. Esto significa que una variable ya está explicada por otra, así que se decide suprimir **loudness**. 
+
+Por otra parte, como la variable $instrumentalness$ no reduce significativamente el sesgo mediante ninguna transformación, para evitar que este efecto pueda repercutir negativamente en la predicción del modelo, se decide eliminarla. 
+
+Por lo tanto, las 5 variables seleccionadas son: $\text{speechiness_boxcox, liveness_boxcox, acousticness_sqrt, danceability, audio_valence}$
+
+# 7. KNN
 
 Base de datos con las variables seleccionadas y sus transformaciones
 ```{r}
-datos_prepro<-datos_final[,c("speechiness_boxcox", "liveness_boxcox", "acousticness_sqrt", "danceability", "audio_valence", "loudness")]
+datos_prepro<-datos_final[,c("speechiness_boxcox", "liveness_boxcox", "acousticness_sqrt", "danceability", "audio_valence")]
 datos_prepro$song_popularity<-datos_num$song_popularity
 # View(datos_prepro)
 ```
 
 
-### Elección del valor óptimo de k
-```{r}
+## 7.1 Elección del valor óptimo de k
+
+Para discutir cuál es el valor óptimo de k, se toman por referencia los cálculos del *RMSE* (**Raíz del Error Cuadrático Medio**) y del *MAPE* (**Error Percentual Absoluto Medio**). Las fórmulas de ambas expresiones se describen a continuación:
+
+\[
+\text{RMSE} = \sqrt{\frac{\sum_{i=1}^{n} (y_i - \hat{y}_i)^2}{n}}
+\]
+
+\[
+\text{MAPE} = 100 \times \frac{1}{n} \sum_{t=1}^{n} \left| \frac{A_t - F_t}{A_t} \right|
+\]
+
+El **Error Percentual Absoluto Medio** (**MAPE**: *Mean Absolute Percentual Error*) mide el error porcentual medio entre los valores reales  ($A_t$) y los valores pronosticados ($F_t$). Una ventaja que tiene esta medida frente a la **Raíz del Error Cuadrático Medio**, es que, al ser porcentual, es adimensional y, por tanto, no depende de las unidades. De esta manera facilita su interpretación. 
+
+Se usan distintos valores impares para *k* y se calcula el **RMSE** y el **MAPE** en cada uno de ellos para escoger aquél que proporciona un error mínimo.
+
+```{r, warning=FALSE}
 library(FNN)
 set.seed(1994)
 
@@ -1766,49 +1793,73 @@ datos <- datos_prepro
 train <- datos[default_idx, ]
 test  <- datos[-default_idx, ]
 
-X_train <- train[, -7]
-X_test  <- test[, -7]
-y_train <- train[, 7]
-y_test  <- test[, 7]
+X_train <- train[, -6]
+X_test  <- test[, -6]
+y_train <- train[, 6]
+y_test  <- test[, 6]
 
 # Convertimos todo a numérico
 X_train <- data.frame(lapply(X_train, as.numeric))
 X_test  <- data.frame(lapply(X_test, as.numeric))
-
-# Predicción simple con k = 1
-pred <- knn.reg(train = X_train, test = X_test, y = y_train, k = 1)
-head(pred$pred)
 
 # Función para calcular RMSE
 rmse <- function(actual, predicted) {
   sqrt(mean((actual - predicted)^2))
 }
 
-# Vector de valores de k a probar
-k <- c(1,3,5,7,9,11,13,15,17,19)   # puedes ampliar si quieres
+# Función para calcular MAPE
+mape <- function(actual, predicted) {
+  non_zero <- actual != 0  # filtrar valores distintos de 0
+  mean(abs((actual[non_zero] - predicted[non_zero]) / actual[non_zero])) * 100
+}
 
-# Calcular RMSE para cada k
-rmse_values <- sapply(k_values, function(k) {
-  make_knn_pred(k = k,
-                training = X_train,
-                predicting = X_test,
-                valueTarget = y_train,
-                actual = y_test)
-})
+# Vector de valores de k a probar
+k_values <- c(1, 3, 5, 7, 9, 11, 13, 15, 17, 19)
+
+# Calcular RMSE y MAPE para cada k
+results <- data.frame(
+  k = k_values,
+  RMSE = numeric(length(k_values)),
+  MAPE = numeric(length(k_values))
+)
+
+for (i in seq_along(k_values)) {
+  k <- k_values[i]
+  
+  pred <- knn.reg(train = X_train, test = X_test, y = y_train, k = k)$pred
+  
+  results$RMSE[i] <- rmse(y_test, pred)
+  results$MAPE[i] <- mape(y_test, pred)
+}
 
 # Mostrar los resultados
-data.frame(k = k_values, RMSE = rmse_values)
+print(results)
 
 # Encontrar el k con menor RMSE
-best_k <- k_values[which.min(rmse_values)]
-best_rmse <- min(rmse_values)
+best_rmse_k <- results$k[which.min(results$RMSE)]
+best_rmse <- min(results$RMSE)
 
-cat("Mejor k:", best_k, "\nRMSE mínimo:", best_rmse, "\n")
+# Encontrar el k con menor MAPE
+best_mape_k <- results$k[which.min(results$MAPE)]
+best_mape <- min(results$MAPE)
+
+cat("Mejor k según RMSE:", best_rmse_k, " (RMSE =", best_rmse, ")\n")
+cat("Mejor k según MAPE:", best_mape_k, " (MAPE =", best_mape, ")\n")
 ```
 
-Hemos probado valores impares para k, concretamente: 1,3,5,7,9,11,13,15,17,19 y hemos visto que para k=5 el *rmse* es mínimo. 
+Dado que el valor de k que minimiza el **RMSE** es 5, y el que minimiza el **MAPE** es 3, se procede a calcular un criterio combinado para elegir el que minimice ambos errores balanceados:
 
-### Modelo con k óptimo 
+```{r}
+results$score <- scale(results$RMSE) + scale(results$MAPE)
+best_combined_k <- results$k[which.min(results$score)]
+cat("Mejor k combinado:", best_combined_k, "\n")
+```
+
+Por lo tanto, el valor óptimo de k es **k=17**. 
+
+## 7.2 Modelo con k óptimo 
+
+Se usa **k=17** como valor óptimo para realizar el *KNN*.
 
 ```{r}
 modelo_knn <- knn.reg(train = X_train, test = X_test, y = y_train, k = 5)
@@ -1821,11 +1872,9 @@ e2 <- abs(y - yp)
 
 # --- RMSE final ---
 rmse <- sqrt(mean(e1))
-cat("RMSE del modelo con k =", 5, ":", rmse, "\n")
+cat("RMSE del modelo con k =", 17, ":", rmse, "\n")
 ```
 
-**Cálculo del MAPE**
-```{r}
 
-```
+`
 
