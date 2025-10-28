@@ -1356,7 +1356,6 @@ library(tidyverse)
 
 numeric_cols <- sapply(datos, is.numeric)
 datos_num <- datos[, numeric_cols]
-datos_num<-datos_num[, -1]
 # ncol(datos_num); ncol(datos)
 varianza <- nearZeroVar(datos_num, saveMetrics = T)
 varianza
