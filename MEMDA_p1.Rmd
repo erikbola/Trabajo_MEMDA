@@ -10,11 +10,8 @@ output:
 ```{r setup, include=FALSE}
 # Paquetes básicos que usas
 library(tidyverse)   # incluye ggplot2 y dplyr (%>%)
-install.packages("DataExplorer")
 library(DataExplorer)
-install.packages("inspectdf")
 library(inspectdf)
-install.packages("skimr")
 library(skimr)
 library(SmartEDA)
 library(naniar)
@@ -1095,35 +1092,22 @@ resultado_res_knn <- resultado_res_knn[order(-resultado_res_knn$score_knn), ]
 ## Ver top
 head(resultado_res_knn, 10)
 ```
+
+
 ```{r}
-plot(resultado_res_knn$score_knn)
-abline(h=0.3)
+plot(resultado_res_knn$score_robust_z)
+abline(h=3)
 ```
 
 ```{r}
-
+outliers <- resultado_res_knn$fila[resultado_res_knn$score_robust_z > 3]
+length(outliers)
+length(outliers)/13186
 ```
-
-
-### 4.2.7. Local Outlier Factor (LOF)
-
+Debido a que la cantidad de outliers supongo apenas un 3,15% de las observaciones totales, por simplicidad procedemos a eliminarlos.
 ```{r}
-#library(DMwR2)
-#ibrary(dplyr)
-
-#outlier.scores <- lofactor(datos[, varNum], k = 5)
-#par(mfrow=c(1,1))
-#plot(density(outlier.scores))
-#outlier.scores
-#outliers <- order(outlier.scores, decreasing=T)
-#outliers <- order(outlier.scores, decreasing=T)[1:5]
+datos<-datos[-outliers,]
 ```
-
-
-#### 4.2.7.1. Nueva versión de LOF
-
-### 4.2.8. Isolation Forest
-
 
 # 5.NA's
 

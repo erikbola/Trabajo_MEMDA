@@ -1,0 +1,162 @@
+---
+title: "Submission"
+author: "Erik Bola Sanchez"
+date: "2025-10-29"
+output: html_document
+---
+# 0. Paquetes y Datos
+```{r setup, include=FALSE}
+# Paquetes básicos que usas
+library(tidyverse)   # incluye ggplot2 y dplyr (%>%)
+library(DataExplorer)
+library(inspectdf)
+library(skimr)
+library(SmartEDA)
+library(naniar)
+library(forcats)# utilidades para factors
+library(readr)
+library(dlookr)# para diagnose()
+library(EnvStats) # IQR
+library(dplyr)
+library(purrr)
+
+# Evitar el warning de xts vs dplyr::lag (si lo usas)
+options(xts.warn_dplyr_breaks_lag = FALSE)
+```
+
+
+```{r}
+datos <- read_csv("train.csv")
+test <- read_csv("test.csv")
+```
+
+# 1. Preliminares
+```{r}
+# Conversión a factores
+datos$key <- factor(datos$key)
+datos$audio_mode <- factor(datos$audio_mode) # 0 = menor, 1 = mayor
+datos$time_signature <- factor(datos$time_signature)
+
+clases <- sapply(datos, class)
+
+varNum <- names(clases)[which(clases %in% c("numeric", "integer"))]
+varNum<-varNum[!varNum %in% c("ID","song_popularity")]
+varCat <- names(clases)[which(clases %in% c("character", "factor"))]
+```
+
+# 2. Outliers
+```{r}
+```{r}
+library(adamethods)
+res_knn<-do_knno(datos[,varNum], k=1, top_n=3000)
+```
+Con este metodo conseguimos el identificador de las 3000 observaciones con un outliers scoore mas alto.
+
+```{r}
+## --- Parámetros ---
+k <- 1              # usa el mismo k que en do_knno()
+idx_targets <- res_knn  # tus 100 índices
+
+## --- 1) Preparar matriz X con variables numéricas ---
+X <- datos[, varNum, drop = FALSE]
+p <- ncol(X)
+
+## --- 2) Estandarizar por columna ignorando NAs ---
+std_col <- function(v) {
+  mu <- mean(v, na.rm = TRUE)
+  sdv <- sd(v, na.rm = TRUE)
+  if (is.na(sdv) || sdv == 0) return((v - mu))   # evita dividir por 0
+  (v - mu) / sdv
+}
+Xs <- as.data.frame(lapply(X, std_col))
+Xs <- as.matrix(Xs)  # para operaciones más rápidas
+
+n <- nrow(Xs)
+
+## --- 3) Función de distancia euclídea "pairwise" ajustada por missingness ---
+## d_ij = sqrt( sum((xi-xj)^2 over m) * (p / m) ), con m vars observadas en el par
+pairwise_dist_row <- function(i, Xs) {
+  xi <- Xs[i, ]
+  # Máscara NA por columnas respecto xi (TRUE si xi es no-NA)
+  mask_i <- !is.na(xi)
+  d <- rep(NA_real_, n)
+  for (j in 1:n) {
+    if (j == i) next
+    xj <- Xs[j, ]
+    mask <- mask_i & !is.na(xj)
+    m <- sum(mask)
+    if (m == 0) {
+      d[j] <- NA_real_
+    } else {
+      diff2 <- xi[mask] - xj[mask]
+      d[j] <- sqrt(sum(diff2 * diff2) * (p / m))
+    }
+  }
+  d
+}
+
+## --- 4) Obtener el k-NN distance para cada índice objetivo respecto a TODO el dataset ---
+get_knn_dist <- function(i, Xs, k = 1) {
+  d <- pairwise_dist_row(i, Xs)
+  # Ordenar ignorando NAs y excluyendo la propia observación
+  vec <- sort(d[!is.na(d)], partial = k)
+  if (length(vec) < k) return(NA_real_)
+  vec[k]
+}
+
+## --- 5) Calcular scores para tus 100 observaciones ---
+scores_res <- vapply(idx_targets, function(i) get_knn_dist(i, Xs, k = k), numeric(1))
+
+resultado_res_knn <- data.frame(
+  fila = idx_targets,
+  score_knn = scores_res
+)
+
+## --- (Opcional) Si quieres una versión 'avg_k' (media de las k distancias más cercanas) ---
+get_knn_avgdist <- function(i, Xs, k = 5) {
+  d <- pairwise_dist_row(i, Xs)
+  vec <- sort(d[!is.na(d)], partial = k)
+  if (length(vec) < k) return(NA_real_)
+  mean(vec[1:k])
+}
+# ejemplo: avg_scores_res <- vapply(idx_targets, function(i) get_knn_avgdist(i, Xs, k = 5), numeric(1))
+
+## --- (Opcional) Normalizaciones monótonas para alinear la "escala" de do_knno ---
+## Mantienen el ranking, por si do_knno aplica alguna de estas:
+minv <- min(scores_res, na.rm = TRUE); maxv <- max(scores_res, na.rm = TRUE)
+resultado_res_knn$score_minmax_0_1 <- (resultado_res_knn$score_knn - minv) / (maxv - minv)
+
+medv <- median(scores_res, na.rm = TRUE); madv <- mad(scores_res, constant = 1, na.rm = TRUE)
+resultado_res_knn$score_robust_z <- (resultado_res_knn$score_knn - medv) / madv
+
+## --- Ordenar por mayor sospecha (score más grande) ---
+resultado_res_knn <- resultado_res_knn[order(-resultado_res_knn$score_knn), ]
+
+## Ver top
+head(resultado_res_knn, 10)
+```
+
+```{r}
+outliers <- resultado_res_knn$fila[resultado_res_knn$score_robust_z > 3]
+length(outliers)
+length(outliers)/13186
+```
+
+```{r}
+datos<-datos[-outliers,]
+```
+
+# 3. Missings / NA's
+```{r}
+datos$fila_original <- seq_len(nrow(datos))
+
+datos <- datos |>
+  dplyr::mutate(
+    key            = factor(key),
+    audio_mode     = factor(audio_mode),
+    time_signature = factor(time_signature)
+  )
+na_var_sum  <- naniar::miss_var_summary(datos)
+na_case_sum <- naniar::miss_case_summary(datos)
+
+```
