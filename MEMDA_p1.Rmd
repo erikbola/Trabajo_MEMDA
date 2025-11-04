@@ -10,11 +10,8 @@ output:
 ```{r setup, include=FALSE}
 # Paquetes básicos que usas
 library(tidyverse)   # incluye ggplot2 y dplyr (%>%)
-install.packages("DataExplorer")
 library(DataExplorer)
-install.packages("inspectdf")
 library(inspectdf)
-install.packages("skimr")
 library(skimr)
 library(SmartEDA)
 library(naniar)
@@ -1095,250 +1092,28 @@ resultado_res_knn <- resultado_res_knn[order(-resultado_res_knn$score_knn), ]
 ## Ver top
 head(resultado_res_knn, 10)
 ```
+
+
 ```{r}
-plot(resultado_res_knn$score_knn)
-abline(h=0.3)
+plot(resultado_res_knn$score_robust_z)
+abline(h=3)
 ```
 
 ```{r}
-
+outliers <- resultado_res_knn$fila[resultado_res_knn$score_robust_z > 3]
+length(outliers)
+length(outliers)/13186
 ```
-
-
-### 4.2.7. Local Outlier Factor (LOF)
-
+Debido a que la cantidad de outliers supongo apenas un 3,15% de las observaciones totales, por simplicidad procedemos a eliminarlos.
 ```{r}
-#library(DMwR2)
-#ibrary(dplyr)
-
-#outlier.scores <- lofactor(datos[, varNum], k = 5)
-#par(mfrow=c(1,1))
-#plot(density(outlier.scores))
-#outlier.scores
-#outliers <- order(outlier.scores, decreasing=T)
-#outliers <- order(outlier.scores, decreasing=T)[1:5]
+datos<-datos[-outliers,]
 ```
-
-
-#### 4.2.7.1. Nueva versión de LOF
-
-### 4.2.8. Isolation Forest
-
 
 # 5.NA's
-
-## 5.1 Resumen de NA (variables y casos)
-```{r}
-datos$fila_original <- seq_len(nrow(datos))
-
-datos <- datos |>
-  dplyr::mutate(
-    key            = factor(key),
-    audio_mode     = factor(audio_mode),
-    time_signature = factor(time_signature)
-  )
-na_var_sum  <- naniar::miss_var_summary(datos)
-na_case_sum <- naniar::miss_case_summary(datos)
-
-print(head(na_var_sum, 15))
-print(head(na_case_sum, 10))
-```
-
-## 5.2 “Bloque” de filas con todos los predictores en NA
-
-```{r}
-preds <- setdiff(names(datos), c("ID","song_popularity"))
-bloque_na_filas <- sum(rowSums(is.na(datos[, preds])) == length(preds))
-completas_pred  <- sum(stats::complete.cases(datos[, preds]))
-cat("\n[1.2] Filas con TODOS los predictores en NA:", bloque_na_filas, "\n")
-cat("[1.2] Filas con predictores completos:", completas_pred, "\n")
-```
-
-## 5.3 Exclusión del bloque sin información de predictores
-```{r}
-
-datos_filtrado <- datos[rowSums(is.na(datos[, preds])) < length(preds), ]
-cat("\n[1.3] Dimensión tras excluir bloque:", nrow(datos_filtrado), "x", ncol(datos_filtrado), "\n")
-```
-## 5.4 Detección y exclusión de variables casi nulas
-```{r}
-excluir_base <- c("ID", "song_popularity")
-
-X <- datos[ , setdiff(names(datos), excluir_base), drop = FALSE]
-
-nzv_like <- function(x){
-  x_noNA <- x[!is.na(x)]
-  n <- length(x_noNA)
-  if (n == 0) return(list(nzv = TRUE, reason = "all_NA"))
-  # % de valores únicos (como caret)
-  pct_unique <- 100 * (length(unique(x_noNA)) / n)
-  # ratio entre la categoría/valor más frecuente y el segundo
-  tb <- sort(table(x_noNA), decreasing = TRUE)
-  top <- as.numeric(tb[1])
-  second <- as.numeric(if (length(tb) >= 2) tb[2] else 0)
-  freq_ratio <- if (second == 0) Inf else top / second
-  # constante (varianza cero) para numéricos
-  const_num <- is.numeric(x_noNA) && sd(x_noNA) < .Machine$double.eps
-  # near-zero variance estilo caret
-  nzv <- (pct_unique <= 10) && (freq_ratio > 19)
-  reason <- c()
-  if (const_num) reason <- c(reason, "constante")
-  if (nzv)       reason <- c(reason, "near-zero")
-  if (length(reason) == 0) reason <- "ok"
-  list(nzv = (const_num || nzv), reason = paste(reason, collapse = "+"),
-       pct_unique = pct_unique, freq_ratio = freq_ratio)
-}
-
-res <- lapply(X, nzv_like)
-tab <- data.frame(
-  variable   = names(res),
-  nzv        = vapply(res, `[[`, logical(1), "nzv"),
-  reason     = vapply(res, `[[`, character(1), "reason"),
-  pct_unique = round(vapply(res, `[[`, numeric(1), "pct_unique"), 3),
-  freq_ratio = round(vapply(res, `[[`, numeric(1), "freq_ratio"), 3),
-  row.names = NULL
-)
-
-# Resultado
-cat("\nVariables que vamos a eliminar):\n")
-print(tab[tab$nzv, c("variable","reason","pct_unique","freq_ratio")], row.names = FALSE)
-
-cat("\nVariables que conservamos:\n")
-print(tab[!tab$nzv, c("variable","pct_unique","freq_ratio")], row.names = FALSE)
-
-
-vars_a_quitar <- tab$variable[tab$nzv]
-datos_nzv <- datos[, setdiff(names(datos), vars_a_quitar), drop = FALSE]
-```
-
-## 5.6 Selección de predictores 
-
-```{r}
-
-## 5.6.1) Correlaciones con el target (solo numéricas, excluyendo ID)
-is_num  <- sapply(datos_nzv, is.numeric)
-nums    <- setdiff(names(datos_nzv)[is_num], c("ID","song_popularity","fila_original"))
-cors    <- sapply(nums, function(v) cor(datos_nzv[[v]], datos_nzv[["song_popularity"]], use = "complete.obs"))
-cat("\n[3.1] Correlaciones con song_popularity:\n")
-print(round(cors, 4))
-## 5.6.2) Selección por umbral |r| >= 0.3
-umbral <- 0.3
-sel_num <- names(which(abs(cors) >= umbral))
-cat("\n[3.2] Numéricas seleccionadas con |r| >= ", umbral, ":\n", sep = "")
-print(sel_num)
-
-## 5.6.3) Añadir categóricas 
-cat_vars <- intersect(c("key","audio_mode"), names(datos_nzv))
-predictores_finales <- unique(c(sel_num, cat_vars))
-cat("\n[3.3] Predictores finales (numéricas por score + categóricas):\n")
-print(predictores_finales)
-```
-
-## 5.7 Filtrado de outliers con el score KNN
-
-```{r}
-
-stopifnot(exists("resultado_res_knn"))
-stopifnot(all(c("fila") %in% names(resultado_res_knn)))
-stopifnot("ID" %in% names(datos))        # para mapear fila -> ID
-stopifnot("ID" %in% names(datos_nzv))    # para filtrar en el dataset final
-
-# Elegimos score normalizado en [0,1]
-if ("score_minmax_0_1" %in% names(resultado_res_knn)) {
-  score_norm <- resultado_res_knn$score_minmax_0_1
-} else {
-  
-  s <- resultado_res_knn$score_knn
-  s_min <- min(s, na.rm = TRUE); s_max <- max(s, na.rm = TRUE)
-  score_norm <- (s - s_min) / (s_max - s_min)
-}
-
-# Filas que superan el umbral 0.3
-umbral <- 0.3
-filas_out <- resultado_res_knn$fila[!is.na(score_norm) & score_norm >= umbral]
-
-# Convertimos filas -> IDs del dataset original
-filas_out <- filas_out[filas_out >= 1 & filas_out <= nrow(datos)]
-ids_out   <- unique(as.character(datos$ID[filas_out]))
-ids_out   <- ids_out[!is.na(ids_out)]
-
-cat("\n[4] Outliers por score >= ", umbral, 
-    "  | filas=", length(filas_out), 
-    "  | IDs únicos=", length(ids_out), "\n", sep = "")
-
-# Filtramos en el dataset ya depurado (datos_nzv)
-n0 <- nrow(datos_nzv)
-en_nzv <- sum(datos_nzv$ID %in% ids_out)
-
-if (en_nzv > 0) {
-  datos_nzv <- datos_nzv[!(datos_nzv$ID %in% ids_out), , drop = FALSE]
-  cat("Filtrado aplicado en datos_nzv: ", n0, " -> ", nrow(datos_nzv),
-      " (eliminadas ", en_nzv, " filas)\n", sep = "")
-} else {
-  cat("AVISO: 0 IDs intersectan con datos_nzv (puede que esas filas ya se eliminasen por NA/NZV o por partición).\n")
-}
-
-```
-
-```{r}
-set.seed(123)
-idx <- sample.int(nrow(datos_nzv), size = floor(0.7 * nrow(datos_nzv)))
-train <- datos_nzv[idx, , drop = FALSE]
-test  <- datos_nzv[-idx, , drop = FALSE]
-
-y_train <- train[["song_popularity"]]
-y_test  <- test[["song_popularity"]]
-cat("\n[5] Split -> train:", nrow(train), " | test:", nrow(test), "\n")
-```
-
-```{r}
-# Identificación numérica/factor en TRAIN
-is_num_train  <- sapply(train, is.numeric)
-is_fact_train <- sapply(train, is.factor)
-
-# Medianas (num) y modas (factor) en TRAIN
-medianas <- vapply(train[, is_num_train, drop = FALSE],
-                   function(v) stats::median(v, na.rm = TRUE), numeric(1))
-
-moda <- function(v){
-  v2 <- v[!is.na(v)]
-  if (!length(v2)) return(NA)
-  names(sort(table(v2), decreasing = TRUE))[1]
-}
-modas <- vapply(train[, is_fact_train, drop = FALSE], moda, character(1))
-
-# Función de imputación
-imputa_df <- function(df){
-  # Numéricas
-  for (nm in names(medianas)) if (nm %in% names(df)) {
-    v <- df[[nm]]; v[is.na(v)] <- medianas[[nm]]; df[[nm]] <- v
-  }
-  # Factores
-  for (nm in names(modas)) if (nm %in% names(df)) {
-    v <- df[[nm]]; repl <- modas[[nm]]
-    v[is.na(v)] <- repl
-    if (is.factor(v) && !is.na(repl) && !(repl %in% levels(v))) {
-      levels(v) <- c(levels(v), repl)
-    }
-    df[[nm]] <- v
-  }
-  df
-}
-
-train_imp <- imputa_df(train)
-test_imp  <- imputa_df(test)
-
-cat("[6] Imputación realizada con mediana (num) y moda (factor) usando TRAIN.\n")
-# Conjunto de predictores para modelado
-# =====================================================================
-preds_final <- setdiff(names(train_imp), c("ID", "song_popularity"))
-cat("[7] Predictores finales:", length(preds_final), "\n")
-```
 ```{r, warning=FALSE, include=FALSE}
 library(mice)
 tempData <- mice(datos,m=5,maxit=50,meth='pmm',seed=500)
 ```
-
 
 # 6. Feature engineering
 
