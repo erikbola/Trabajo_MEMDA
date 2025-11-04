@@ -1874,6 +1874,50 @@ rmse <- sqrt(mean(e1))
 cat("RMSE del modelo con k =", 17, ":", rmse, "\n")
 ```
 
+# 8. Association Rules
+
+```{r, include=FALSE, warning=FALSE, message=FALSE}
+# INSTALLING AND LOADING THE ARULES PACKAGE
+
+# install.packages("arules")
+# install.packages("arulesViz")
+# install.packages("tidyverse")
+# install.packages("arulesViz")
+library(arules)
+library(arulesViz)
+library(FactoMineR)
+library(tidyverse)
+```
+
+
+
+## 8.1 Transformation of the DB into a transactional DB 
+```{r}
+
+```
+
+## 8.2 Finding association rules
+```{r}
+
+```
+
+### 8.2.1 Mining the rules by confidence 
+```{r}
+
+```
+
+### 8.2.2 Mining the rules by lift
+```{r}
+
+```
+
+## 8.3 ECLAT
+```{r}
+
+```
+
+
+
 
 `
 
