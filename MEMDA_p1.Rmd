@@ -1896,7 +1896,7 @@ if (length(reglas_popularidad) > 0) {
   inspect(reglas_popularidad)
 }
 ```
-# 8.5 Evaluación y visualización de resultados
+## 8.5 Evaluación y visualización de resultados
 
 ```{r, warning=FALSE, message=FALSE}
 # install.packages("arulesViz")
