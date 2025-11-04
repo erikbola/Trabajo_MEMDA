@@ -1662,34 +1662,313 @@ library(arules)
 library(arulesViz)
 library(FactoMineR)
 library(tidyverse)
+
+# Configurar opciones para mejor visualización
+options(digits = 3)
 ```
 
-
-
-## 8.1 Transformation of the DB into a transactional DB 
 ```{r}
-
+# Visión general de la base de datos preprocesada
+names(datos_prepro) ## 5 predictoras
+head(datos_prepro)
+summary(datos_prepro)
+str(datos_prepro)
 ```
+## 8.1 Preparación y exploración de datos
 
-## 8.2 Finding association rules
+Transformamos la base de datos en un archivo de transacciones. Para ello, todas las variables deben ser categóricas. 
+
 ```{r}
+# Verificar estructura de los datos
+cat("=== ESTRUCTURA INICIAL DE LOS DATOS ===\n")
+str(datos_prepro)
+summary(datos_prepro)
 
+# Convertir variables lógicas a factores (si aplica)
+cat("\n=== CONVERSIÓN DE VARIABLES ===\n")
+for (j in 1:ncol(datos_prepro)) {
+  if(class(datos_prepro[,j]) == "logical") {
+    datos_prepro[,j] <- as.factor(datos_prepro[,j])
+    cat("Convertida columna", j, names(datos_prepro)[j], "de logical a factor\n")
+  }
+}
+
+# Verificar estructura final
+cat("\n=== ESTRUCTURA FINAL ===\n")
+str(datos_prepro)
 ```
 
-### 8.2.1 Mining the rules by confidence 
+## 8.2 Conversión a transacciones
+
 ```{r}
+cat("=== CONVERSIÓN A TRANSACCIONES ===\n")
 
+# Método robusto de conversión
+tryCatch({
+  datos_transacciones <- as(datos_prepro, "transactions")
+}, error = function(e) {
+  cat("Error en conversión directa, usando método alternativo...\n")
+  # Convertir todas las columnas a factores primero
+  datos_prepro_factors <- as.data.frame(lapply(datos_prepro, as.factor))
+  datos_transacciones <- as(datos_prepro_factors, "transactions")
+})
+
+# Resumen de las transacciones
+cat("\n=== RESUMEN DE TRANSACCIONES ===\n")
+summary(datos_transacciones)
+
+# Visualizar items más frecuentes
+itemFrequencyPlot(datos_transacciones, 
+                  topN = 15,
+                  main = "15 Características Musicales Más Frecuentes",
+                  col = "steelblue",
+                  type = "relative")
 ```
 
-### 8.2.2 Mining the rules by lift
 ```{r}
+# Cantidad de transacciones e ítems
+datos_trans
+summary(datos_trans)
+class(datos_trans)
 
+# FUNCTION inspect
+inspect(datos_trans[1:6])
+transactionInfo(datos_trans[1:10])
+
+# Distribución del tamaño de transacciones
+SIZE <- size(datos_trans)
+summary(SIZE)
+quantile(SIZE, probs = seq(0,1,0.1))
 ```
+Se puede comprobar que la base de datos transaccional contiene 373 transacciones y 1484 ítems. Del mismo modo, se observa que se podrán hacer itemsets de hasta tamaño 5. 
 
-## 8.3 ECLAT
+## 8.3 Análisis de itemsets frecuentes
+
 ```{r}
+cat("=== ITEMSETS FRECUENTES ===\n")
 
+# Probar con diferentes valores de support
+supports <- c(0.01, 0.02, 0.03, 0.05)
+itemsets_encontrados <- FALSE
+
+for (sup in supports) {
+  itemsets_frecuentes <- apriori(datos_transacciones,
+                                parameter = list(support = sup,
+                                               minlen = 2,
+                                               maxlen = 3,  # Reducir longitud máxima
+                                               target = "frequent itemsets"))
+  
+  cat("Support =", sup, "-> Itemsets encontrados:", length(itemsets_frecuentes), "\n")
+  
+  if (length(itemsets_frecuentes) > 0) {
+    itemsets_encontrados <- TRUE
+    break
+  }
+}
+
+if (itemsets_encontrados) {
+  cat("\n=== TOP ITEMSETS POR SUPPORT ===\n")
+  # Mostrar todos los itemsets encontrados (hasta 10)
+  n_mostrar <- min(10, length(itemsets_frecuentes))
+  inspect(sort(itemsets_frecuentes, by = "support")[1:n_mostrar])
+} else {
+  cat("\n*** No se encontraron itemsets frecuentes. Probando con parámetros más flexibles... ***\n")
+  
+  # Intentar con parámetros más flexibles
+  itemsets_frecuentes <- apriori(datos_transacciones,
+                                parameter = list(support = 0.005,  # Más bajo
+                                               minlen = 1,        # Permitir itemsets de 1
+                                               maxlen = 2,
+                                               target = "frequent itemsets"))
+  
+  cat("Con support = 0.005 -> Itemsets encontrados:", length(itemsets_frecuentes), "\n")
+  
+  if (length(itemsets_frecuentes) > 0) {
+    n_mostrar <- min(10, length(itemsets_frecuentes))
+    inspect(sort(itemsets_frecuentes, by = "support")[1:n_mostrar])
+  } else {
+    cat("*** No se pudieron encontrar itemsets frecuentes con los parámetros actuales ***\n")
+    cat("*** Revisar la estructura de los datos transaccionales ***\n")
+    print(summary(datos_transacciones))
+  }
+}
 ```
+
+## 8.3 Generación de Reglas de asociación
+
+```{r}
+cat("=== GENERACIÓN DE REGLAS DE ASOCIACIÓN ===\n")
+
+# Probar diferentes combinaciones de parámetros
+parametros_list <- list(
+  list(support = 0.01, confidence = 0.3),
+  list(support = 0.005, confidence = 0.2),
+  list(support = 0.02, confidence = 0.4)
+)
+
+reglas_encontradas <- FALSE
+
+for (params in parametros_list) {
+  reglas <- apriori(datos_transacciones,
+                   parameter = list(support = params[[1]],
+                                  confidence = params[[2]],
+                                  minlen = 1,  # Permitir reglas más simples
+                                  maxlen = 3))
+  
+  cat("Support =", params[[1]], "Confidence =", params[[2]], 
+      "-> Reglas encontradas:", length(reglas), "\n")
+  
+  if (length(reglas) > 0) {
+    reglas_encontradas <- TRUE
+    break
+  }
+}
+
+if (reglas_encontradas) {
+  cat("Total de reglas generadas:", length(reglas), "\n")
+  
+  # Filtrar reglas interesantes (parámetros más flexibles)
+  if (length(reglas) > 0) {
+    calidad_reglas <- quality(reglas)
+    reglas_interesantes <- reglas[
+      calidad_reglas$lift > 1.0 &  # Más flexible
+      calidad_reglas$confidence > 0.3  # Más flexible
+    ]
+    
+    cat("Reglas interesantes (lift > 1.0, confidence > 0.3):", length(reglas_interesantes), "\n")
+    
+    if (length(reglas_interesantes) > 0) {
+      # Ordenar y mostrar
+      reglas_ordenadas <- sort(reglas_interesantes, by = "lift", decreasing = TRUE)
+      n_mostrar <- min(15, length(reglas_ordenadas))
+      cat("\n=== TOP", n_mostrar, "REGLAS POR LIFT ===\n")
+      inspect(reglas_ordenadas[1:n_mostrar])
+    }
+  }
+  
+} else {
+  cat("*** No se pudieron generar reglas con los parámetros estándar ***\n")
+  reglas_interesantes <- reglas  # Vacío pero evita error
+}
+```
+
+
+## 8.4 Análisis de Popularidad
+
+```{r}
+cat("=== ANÁLISIS SIMPLIFICADO DE POPULARIDAD ===\n")
+
+# Enfoque directo - solo las mejores reglas
+labels_transacciones <- itemLabels(datos_transacciones)
+patron_popularidad <- grep("popular", labels_transacciones, ignore.case = TRUE, value = TRUE)[1]
+
+if (!is.na(patron_popularidad)) {
+  cat("Analizando variable:", patron_popularidad, "\n")
+  
+  # Solo generar reglas muy específicas y de alta calidad
+  reglas_popularidad <- tryCatch({
+    reglas <- apriori(datos_transacciones,
+                     parameter = list(
+                       support = 0.03,     # Solo patrones comunes
+                       confidence = 0.7,   # Solo muy confiables  
+                       minlen = 2,
+                       maxlen = 3
+                     ),
+                     appearance = list(rhs = patron_popularidad, default = "lhs"))
+    
+    # Filtrar y limitar
+    reglas_filtradas <- reglas[quality(reglas)$lift > 1.5]
+    head(sort(reglas_filtradas, by = "lift", decreasing = TRUE), 10)  # TOP 10
+    
+  }, error = function(e) {
+    cat("No se pudieron generar reglas específicas\n")
+    return(reglas_interesantes)
+  })
+  
+} else {
+  reglas_popularidad <- head(reglas_interesantes, 10)  # Solo 10 mejores generales
+}
+
+cat("Reglas finales para análisis:", length(reglas_popularidad), "\n")
+
+if (length(reglas_popularidad) > 0) {
+  cat("\n=== REGLAS DE POPULARIDAD ===\n")
+  inspect(reglas_popularidad)
+}
+```
+# 8.5 Evaluación y visualización de resultados
+
+```{r, warning=FALSE, message=FALSE}
+# install.packages("arulesViz")
+library(arulesViz)
+cat("=== EVALUACIÓN DE REGLAS ===\n")
+
+# Mostrar las mejores reglas
+cat("\n=== MEJORES REGLAS POR LIFT ===\n")
+mejores_reglas <- head(sort(reglas_popularidad, by = "lift", decreasing = TRUE), 15)
+inspect(mejores_reglas)
+
+# Métricas de calidad
+cat("\n=== MÉTRICAS DE CALIDAD ===\n")
+calidad <- quality(mejores_reglas)
+print(summary(calidad))
+
+# Visualizaciones
+cat("\n=== CREANDO VISUALIZACIONES ===\n")
+
+# Scatter plot de las reglas
+plot(mejores_reglas, 
+     method = "scatter", 
+     main = "Distribución de Reglas - Support vs Confidence")
+
+# Gráfico de matriz
+plot(mejores_reglas, 
+     method = "matrix", 
+     main = "Matriz de Reglas")
+
+# Gráfico interactivo (si está disponible)
+tryCatch({
+  plot(mejores_reglas, 
+       method = "graph", 
+       main = "Grafo de Reglas de Asociación")
+}, error = function(e) {
+  cat("Gráfico interactivo no disponible\n")
+})
+```
+
+## 8.6 Exportación de resultados
+
+```{r}
+cat("=== EXPORTACIÓN DE RESULTADOS ===\n")
+
+# Crear dataframe con las reglas
+resultados_df <- as(mejores_reglas, "data.frame")
+
+# Exportar a CSV
+write.csv(resultados_df, "reglas_asociacion_musica.csv", row.names = FALSE)
+cat("Resultados exportados a 'reglas_asociacion_musica.csv'\n")
+
+# Mostrar resumen ejecutivo
+cat("\n=== RESUMEN EJECUTIVO ===\n")
+cat("Total reglas generadas:", length(reglas), "\n")
+cat("Reglas filtradas interesantes:", length(reglas_interesantes), "\n")
+cat("Mejores reglas identificadas:", length(mejores_reglas), "\n")
+cat("Lift máximo:", max(quality(mejores_reglas)$lift), "\n")
+cat("Confidence máximo:", max(quality(mejores_reglas)$confidence), "\n")
+```
+
+**Resultados**
+
+```{r}
+cat("=== INTERPRETACIÓN ===\n")
+cat("Las reglas muestran patrones entre características musicales y popularidad.\n")
+cat("Lift > 1 indica asociación positiva significativa.\n")
+cat("Confidence > 0.6 indica reglas confiables.\n")
+cat("Support indica la frecuencia del patrón en las transacciones.\n")
+```
+
+
+
 
 
 
