@@ -2080,6 +2080,213 @@ cat("Support indica la frecuencia del patrón en las transacciones.\n")
 ```
 
 
+# 9. Submission
+
+Preliminares
+```{r}
+test$key <- factor(test$key)
+test$audio_mode <- factor(test$audio_mode) # 0 = menor, 1 = mayor
+test$time_signature <- factor(test$time_signature)
+
+clases <- sapply(test, class)
+
+varNum <- names(clases)[which(clases %in% c("numeric", "integer"))]
+varNum<-varNum[!varNum %in% c("ID")]
+varCat <- names(clases)[which(clases %in% c("character", "factor"))]
+```
+
+Outliers
+```{r}
+
+```
+
+Na's
+```{r, warning=FALSE, include=FALSE}
+library(mice)
+tempData <- mice(test,m=5,maxit=50,meth='pmm',seed=500)
+```
+
+Ingenieria de variables
+
+Analisis
+```{r transformacion_variables, warning=FALSE}
+library(caret)
+library(e1071)
+library(recipes)
+library(tidyverse)
+
+# Usar el dataset con las variables seleccionadas del paso anterior
+# Asumimos que tenemos: datos_final con las 7 variables seleccionadas
+
+cat("ANÁLISIS INICIAL DE DISTRIBUCIONES Y SESGO:\n")
+
+# Función para calcular estadísticas de sesgo
+analizar_sesgo <- function(datos) {
+  skewness_values <- sapply(datos, function(x) {
+    if(is.numeric(x)) {
+      sesgo <- e1071::skewness(x, na.rm = TRUE)
+      tipo_sesgo <- ifelse(abs(sesgo) > 1, "ALTO SESGO",
+                           ifelse(abs(sesgo) > 0.5, "SESGO MODERADO", "BAJO SESGO"))
+      return(c(Sesgo = round(sesgo, 3), Tipo = tipo_sesgo))
+    } else {
+      return(c(Sesgo = NA, Tipo = "NO NUMÉRICA"))
+    }
+  })
+  
+  t(skewness_values) %>% as.data.frame() %>% 
+    rownames_to_column("Variable")
+}
+
+# Aplicar análisis de sesgo a nuestras variables seleccionadas
+variables_seleccionadas <- c("danceability", "audio_valence", "speechiness", 
+                             "liveness", "instrumentalness", "acousticness", "loudness")
+
+datos_transformar <- datos_num[, variables_seleccionadas]
+resultados_sesgo <- analizar_sesgo(datos_transformar)
+print(resultados_sesgo)
+```
+
+Aplicacion transformacion
+```{r aplicacion_transformaciones, warning=FALSE}
+# Identificar variables que necesitan transformación (|sesgo| > 0.5)
+variables_a_transformar <- resultados_sesgo %>%
+  filter(Tipo %in% c("ALTO SESGO", "SESGO MODERADO")) %>%
+  pull(Variable)
+
+cat("VARIABLES A TRANSFORMAR (|sesgo| > 0.5):\n")
+print(variables_a_transformar)
+
+# Aplicar diferentes transformaciones
+datos_transformados <- datos_transformar
+
+for(var in variables_a_transformar) {
+  if(var %in% colnames(datos_transformados)) {
+    
+    # Obtener valores mínimos para ajustar transformaciones
+    min_val <- min(datos_transformados[[var]], na.rm = TRUE)
+    
+    # Aplicar transformaciones según el tipo de variable
+    if(min_val >= 0) {
+      # Para variables con valores positivos
+      datos_transformados[[paste0(var, "_log")]] <- log1p(datos_transformados[[var]])
+      datos_transformados[[paste0(var, "_sqrt")]] <- sqrt(datos_transformados[[var]])
+      
+      # Transformación Box-Cox (requiere valores estrictamente positivos)
+      if(min_val > 0) {
+        bc_transform <- BoxCoxTrans(datos_transformados[[var]])
+        datos_transformados[[paste0(var, "_boxcox")]] <- predict(bc_transform, datos_transformados[[var]])
+      }
+    }
+    
+  }
+}
+
+cat("TRANSFORMACIONES APLICADAS:\n")
+cat("Variables originales:", ncol(datos_transformar), "\n")
+```
+
+PCA
+```{r extraccion_variables, warning=FALSE}
+# INSTALAR Y CARGAR LIBRERÍAS
+#install.packages(c("FactoMineR", "factoextra", "nFactors"))
+library(FactoMineR)
+library(factoextra)
+library(nFactors)
+
+cat("COMIENZO EXTRACCIÓN DE VARIABLES\n")
+cat("===================================\n\n")
+
+
+cat("1. PREPARANDO DATOS PARA ANÁLISIS...\n")
+
+# Usar las 7 variables óptimas del método RFE (con las transformaciones aplicadas)
+
+variables_para_analisis <- c("danceability", "speechiness_boxcox", "liveness_boxcox", "instrumentalness", "acousticness_sqrt", "loudness", "audio_valence")
+
+# Crear dataset solo con estas variables (excluir objetivo)
+datos_analisis <- datos_transformados[, variables_para_analisis]
+
+# Estandarizar (importante para PCA)
+datos_estandarizados <- scale(datos_analisis)
+
+cat("   • Variables analizadas:", paste(variables_para_analisis, collapse = ", "), "\n")
+cat("   • Dimensiones datos:", dim(datos_estandarizados), "\n\n")
+```
+
+```{r, warning=FALSE}
+cat("2. EJECUTANDO ANÁLISIS DE COMPONENTES PRINCIPALES...\n")
+
+pca_resultado <- prcomp(datos_estandarizados, scale. = TRUE)
+
+# Resumen simple
+cat("   • PCA completado\n")
+cat("   • Número de componentes:", length(pca_resultado$sdev), "\n\n")
+```
+
+```{r, warning=FALSE}
+cat("3. IDENTIFICANDO COMPONENTES IMPORTANTES...\n")
+
+# Calcular varianza explicada
+varianza_explicada <- pca_resultado$sdev^2 / sum(pca_resultado$sdev^2) * 100
+
+# Mostrar varianza por componente
+cat("   Varianza explicada por componente:\n")
+for(i in 1:length(varianza_explicada)) {
+  cat("   • PC", i, ": ", round(varianza_explicada[i], 1), "%\n", sep = "")
+}
+
+# Regla simple: componentes que explican >10% de varianza
+componentes_importantes <- which(varianza_explicada > 10)
+cat("\n   • Componentes que explican >10% varianza: PC", 
+    paste(componentes_importantes, collapse = ", PC"), "\n", sep = "")
+```
+
+Creacion variables finales
+```{r, warning=FALSE}
+cat("\n4. CREANDO NUEVAS VARIABLES...\n")
+
+if(length(componentes_importantes) > 0) {
+  # Extraer scores de componentes importantes
+  nuevos_componentes <- as.data.frame(pca_resultado$x[, componentes_importantes])
+  
+  # Dar nombres descriptivos
+  nombres_descriptivos <- c()
+  for(i in 1:length(componentes_importantes)) {
+    nombre <- paste0("Componente_", i)
+    nombres_descriptivos <- c(nombres_descriptivos, nombre)
+  }
+  colnames(nuevos_componentes) <- nombres_descriptivos
+  
+  # Añadir al dataset original
+  datos_final <- cbind(datos_transformados, nuevos_componentes)
+  
+  cat("   • Nuevas variables creadas:", paste(nombres_descriptivos, collapse = ", "), "\n")
+  
+} else {
+  datos_final <- datos_final_transformado
+  cat("   • No se crearon nuevos componentes (poca varianza explicada)\n\n")
+}
+```
+
+```{r}
+datos_prepro<-datos_final[,c("speechiness_boxcox", "liveness_boxcox", "acousticness_sqrt", "danceability", "audio_valence")]
+```
+
+Modelado
+```{r}
+modelo_knn <- knn.reg(train = X_train, test = X_test, y = y_train, k = 5)
+yp <- modelo_knn$pred
+y  <- y_test
+
+# --- Cálculo de errores ---
+e1 <- (y - yp)^2
+e2 <- abs(y - yp)
+
+# --- RMSE final ---
+rmse <- sqrt(mean(e1))
+cat("RMSE del modelo con k =", 17, ":", rmse, "\n")
+```
+
 
 
 
