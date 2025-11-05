@@ -1030,6 +1030,118 @@ Xs <- as.matrix(Xs)  # para operaciones más rápidas
 
 n <- nrow(Xs)
 
+## --- 2b) Identificar variables con outliers ---
+
+# Función auxiliar: detecta outliers por variable numérica
+detect_outliers <- function(x, method = c("zscore", "iqr"), threshold = 3) {
+  method <- match.arg(method)
+  x_noNA <- x[!is.na(x)]
+  
+  if (method == "zscore") {
+    z <- (x_noNA - mean(x_noNA)) / sd(x_noNA)
+    outliers <- which(abs(z) > threshold)
+  } else if (method == "iqr") {
+    q1 <- quantile(x_noNA, 0.25)
+    q3 <- quantile(x_noNA, 0.75)
+    iqr <- q3 - q1
+    lower <- q1 - 1.5 * iqr
+    upper <- q3 + 1.5 * iqr
+    outliers <- which(x_noNA < lower | x_noNA > upper)
+  }
+  
+  return(length(outliers))
+}
+
+# Aplicar a cada variable numérica
+outlier_counts <- sapply(X, detect_outliers, method = "iqr")  # puedes cambiar "iqr" por "zscore"
+outlier_vars <- names(outlier_counts[outlier_counts > 0])
+
+## Resumen
+cat("Variables con outliers detectados:\n")
+print(outlier_vars)
+
+cat("\nNúmero de outliers por variable:\n")
+print(outlier_counts[outlier_counts > 0])
+
+## (Opcional) Crear un data.frame resumen
+resumen_outliers <- data.frame(
+  variable = names(outlier_counts),
+  n_outliers = outlier_counts,
+  prop_outliers = outlier_counts / nrow(X)
+)
+
+# Ver las más afectadas
+head(resumen_outliers[order(-resumen_outliers$n_outliers), ])
+
+## --- 2c) Identificar y marcar outliers por observación y variable ---
+
+# Función que devuelve un vector lógico (TRUE si es outlier)
+is_outlier <- function(x, method = c("zscore", "iqr"), threshold = 3) {
+  method <- match.arg(method)
+  res <- rep(FALSE, length(x))
+  
+  if (method == "zscore") {
+    z <- (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
+    res <- abs(z) > threshold
+  } else if (method == "iqr") {
+    q1 <- quantile(x, 0.25, na.rm = TRUE)
+    q3 <- quantile(x, 0.75, na.rm = TRUE)
+    iqr <- q3 - q1
+    lower <- q1 - 1.5 * iqr
+    upper <- q3 + 1.5 * iqr
+    res <- x < lower | x > upper
+  }
+  
+  res[is.na(x)] <- FALSE  # los NA originales no cuentan como outliers
+  return(res)
+}
+
+# Aplicar a cada variable (columna)
+outlier_matrix <- as.data.frame(lapply(X, is_outlier, method = "iqr"))
+
+# ¿Cuántos outliers por variable?
+outlier_counts <- colSums(outlier_matrix)
+outlier_vars <- names(outlier_counts[outlier_counts > 0])
+
+cat("Variables con outliers detectados:\n")
+print(outlier_vars)
+
+# --- Crear resumen por observación ---
+outlier_summary <- data.frame(
+  obs = 1:nrow(X),
+  n_outlier_vars = rowSums(outlier_matrix),
+  vars_outlier = apply(outlier_matrix, 1, function(row) {
+    paste(names(X)[which(row)], collapse = ", ")
+  })
+)
+
+# Mostrar observaciones con al menos un outlier
+outlier_summary_nonzero <- subset(outlier_summary, n_outlier_vars > 0)
+head(outlier_summary_nonzero, 10)
+
+# --- (Opcional) Reemplazar los outliers por NA en X ---
+X_no_outliers <- X
+for (v in names(X)) {
+  X_no_outliers[outlier_matrix[[v]], v] <- NA
+}
+
+# Si luego quieres usar la versión sin outliers:
+#   -> sustituye X por X_no_outliers en los pasos siguientes
+
+## --- Recalcular matriz estandarizada después de imputar outliers ---
+Xs <- as.data.frame(lapply(X_no_outliers, std_col))
+Xs <- as.matrix(Xs)
+
+n <- nrow(Xs)  # número de filas actual
+
+## --- Validar índices ---
+idx_targets <- idx_targets[idx_targets <= n]
+
+if (length(idx_targets) == 0) {
+  stop("Ningún índice válido en idx_targets; revisa el contenido de res_knn o el dataset.")
+}
+
+
 ## --- 3) Función de distancia euclídea "pairwise" ajustada por missingness ---
 ## d_ij = sqrt( sum((xi-xj)^2 over m) * (p / m) ), con m vars observadas en el par
 pairwise_dist_row <- function(i, Xs) {
@@ -1727,16 +1839,16 @@ itemFrequencyPlot(datos_transacciones,
 
 ```{r}
 # Cantidad de transacciones e ítems
-datos_trans
-summary(datos_trans)
-class(datos_trans)
+datos_transacciones
+summary(datos_transacciones)
+class(datos_transacciones)
 
 # FUNCTION inspect
-inspect(datos_trans[1:6])
-transactionInfo(datos_trans[1:10])
+inspect(datos_transacciones[1:6])
+transactionInfo(datos_transacciones[1:10])
 
 # Distribución del tamaño de transacciones
-SIZE <- size(datos_trans)
+SIZE <- size(datos_transacciones)
 summary(SIZE)
 quantile(SIZE, probs = seq(0,1,0.1))
 ```
@@ -1794,7 +1906,7 @@ if (itemsets_encontrados) {
 }
 ```
 
-## 8.3 Generación de Reglas de asociación
+## 8.4 Generación de Reglas de asociación
 
 ```{r}
 cat("=== GENERACIÓN DE REGLAS DE ASOCIACIÓN ===\n")
@@ -1853,7 +1965,7 @@ if (reglas_encontradas) {
 ```
 
 
-## 8.4 Análisis de Popularidad
+## 8.5 Análisis de Popularidad
 
 ```{r}
 cat("=== ANÁLISIS SIMPLIFICADO DE POPULARIDAD ===\n")
@@ -1896,7 +2008,7 @@ if (length(reglas_popularidad) > 0) {
   inspect(reglas_popularidad)
 }
 ```
-## 8.5 Evaluación y visualización de resultados
+## 8.6 Evaluación y visualización de resultados
 
 ```{r, warning=FALSE, message=FALSE}
 # install.packages("arulesViz")
@@ -1936,7 +2048,7 @@ tryCatch({
 })
 ```
 
-## 8.6 Exportación de resultados
+## 8.7 Exportación de resultados
 
 ```{r}
 cat("=== EXPORTACIÓN DE RESULTADOS ===\n")
