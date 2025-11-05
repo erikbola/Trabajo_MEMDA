@@ -2315,10 +2315,17 @@ yp <- modelo_knn_test$pred
 
 ```{r}
 # Crear dataframe de submission
-submission <- data.frame(ID = test_num$ID, "song_popularity" = yp)
+submission <- data.frame(id = test_num$ID, "song_popularity" = yp)
 
 # Exportar a CSV (sin comillas ni índice)
-write.csv(submission, "submission.csv", row.names = FALSE, quote = FALSE)
+write.table(submission, 
+            file = "submission.csv", 
+            sep = ",",              # separador por comas
+            row.names = FALSE, 
+            col.names = TRUE, 
+            quote = FALSE, 
+            dec = "."               # punto como separador decimal
+)
 ```
 
 
