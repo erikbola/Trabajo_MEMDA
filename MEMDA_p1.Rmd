@@ -1004,43 +1004,35 @@ Podemos calcular las distancias de Cook para discriminar como outliers aquellas 
 ### 4.2.6. K-Nearest Neighbors (KNN) Outlier Score
 
 ```{r}
+# --- Paquetes ---
 library(adamethods)
-res_knn<-do_knno(datos[,varNum], k=1, top_n=3000)
-```
-Con este metodo conseguimos el identificador de las 3000 observaciones con un outliers scoore mas alto.
 
-```{r}
-## --- Parámetros ---
-k <- 1              # usa el mismo k que en do_knno()
-idx_targets <- res_knn  # tus 100 índices
+# --- 1) Outliers multivariantes KNN (como ya tenías) ---
+res_knn <- do_knno(datos[, varNum], k = 1, top_n = 3000)
+idx_targets <- res_knn
 
-## --- 1) Preparar matriz X con variables numéricas ---
+# --- 2) NUMÉRICAS: mismo flujo que tu código ---
 X <- datos[, varNum, drop = FALSE]
 p <- ncol(X)
 
-## --- 2) Estandarizar por columna ignorando NAs ---
 std_col <- function(v) {
   mu <- mean(v, na.rm = TRUE)
   sdv <- sd(v, na.rm = TRUE)
-  if (is.na(sdv) || sdv == 0) return((v - mu))   # evita dividir por 0
+  if (is.na(sdv) || sdv == 0) return((v - mu))
   (v - mu) / sdv
 }
-Xs <- as.data.frame(lapply(X, std_col))
-Xs <- as.matrix(Xs)  # para operaciones más rápidas
 
+Xs <- as.data.frame(lapply(X, std_col))
+Xs <- as.matrix(Xs)
 n <- nrow(Xs)
 
-## --- 2b) Identificar variables con outliers ---
-
-# Función auxiliar: detecta outliers por variable numérica
 detect_outliers <- function(x, method = c("zscore", "iqr"), threshold = 3) {
   method <- match.arg(method)
   x_noNA <- x[!is.na(x)]
-  
   if (method == "zscore") {
     z <- (x_noNA - mean(x_noNA)) / sd(x_noNA)
     outliers <- which(abs(z) > threshold)
-  } else if (method == "iqr") {
+  } else {
     q1 <- quantile(x_noNA, 0.25)
     q3 <- quantile(x_noNA, 0.75)
     iqr <- q3 - q1
@@ -1048,42 +1040,22 @@ detect_outliers <- function(x, method = c("zscore", "iqr"), threshold = 3) {
     upper <- q3 + 1.5 * iqr
     outliers <- which(x_noNA < lower | x_noNA > upper)
   }
-  
-  return(length(outliers))
+  length(outliers)
 }
 
-# Aplicar a cada variable numérica
-outlier_counts <- sapply(X, detect_outliers, method = "iqr")  # puedes cambiar "iqr" por "zscore"
+outlier_counts <- sapply(X, detect_outliers, method = "iqr")
 outlier_vars <- names(outlier_counts[outlier_counts > 0])
 
-## Resumen
-cat("Variables con outliers detectados:\n")
-print(outlier_vars)
+cat("Variables numéricas con outliers detectados:\n"); print(outlier_vars)
+cat("\nNúmero de outliers por variable (numéricas):\n"); print(outlier_counts[outlier_counts > 0])
 
-cat("\nNúmero de outliers por variable:\n")
-print(outlier_counts[outlier_counts > 0])
-
-## (Opcional) Crear un data.frame resumen
-resumen_outliers <- data.frame(
-  variable = names(outlier_counts),
-  n_outliers = outlier_counts,
-  prop_outliers = outlier_counts / nrow(X)
-)
-
-# Ver las más afectadas
-head(resumen_outliers[order(-resumen_outliers$n_outliers), ])
-
-## --- 2c) Identificar y marcar outliers por observación y variable ---
-
-# Función que devuelve un vector lógico (TRUE si es outlier)
 is_outlier <- function(x, method = c("zscore", "iqr"), threshold = 3) {
   method <- match.arg(method)
   res <- rep(FALSE, length(x))
-  
   if (method == "zscore") {
     z <- (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
     res <- abs(z) > threshold
-  } else if (method == "iqr") {
+  } else {
     q1 <- quantile(x, 0.25, na.rm = TRUE)
     q3 <- quantile(x, 0.75, na.rm = TRUE)
     iqr <- q3 - q1
@@ -1091,141 +1063,74 @@ is_outlier <- function(x, method = c("zscore", "iqr"), threshold = 3) {
     upper <- q3 + 1.5 * iqr
     res <- x < lower | x > upper
   }
-  
-  res[is.na(x)] <- FALSE  # los NA originales no cuentan como outliers
-  return(res)
+  res[is.na(x)] <- FALSE
+  res
 }
 
-# Aplicar a cada variable (columna)
 outlier_matrix <- as.data.frame(lapply(X, is_outlier, method = "iqr"))
 
-# ¿Cuántos outliers por variable?
-outlier_counts <- colSums(outlier_matrix)
-outlier_vars <- names(outlier_counts[outlier_counts > 0])
-
-cat("Variables con outliers detectados:\n")
-print(outlier_vars)
-
-# --- Crear resumen por observación ---
-outlier_summary <- data.frame(
-  obs = 1:nrow(X),
-  n_outlier_vars = rowSums(outlier_matrix),
-  vars_outlier = apply(outlier_matrix, 1, function(row) {
-    paste(names(X)[which(row)], collapse = ", ")
-  })
-)
-
-# Mostrar observaciones con al menos un outlier
-outlier_summary_nonzero <- subset(outlier_summary, n_outlier_vars > 0)
-head(outlier_summary_nonzero, 10)
-
-# --- (Opcional) Reemplazar los outliers por NA en X ---
 X_no_outliers <- X
 for (v in names(X)) {
   X_no_outliers[outlier_matrix[[v]], v] <- NA
 }
 
-# Si luego quieres usar la versión sin outliers:
-#   -> sustituye X por X_no_outliers en los pasos siguientes
-
-## --- Recalcular matriz estandarizada después de imputar outliers ---
 Xs <- as.data.frame(lapply(X_no_outliers, std_col))
 Xs <- as.matrix(Xs)
 
-n <- nrow(Xs)  # número de filas actual
-
-## --- Validar índices ---
+n <- nrow(Xs)
 idx_targets <- idx_targets[idx_targets <= n]
+if (length(idx_targets) == 0) stop("Ningún índice válido en idx_targets; revisa res_knn o el dataset.")
 
-if (length(idx_targets) == 0) {
-  stop("Ningún índice válido en idx_targets; revisa el contenido de res_knn o el dataset.")
+# --- 3) CATEGÓRICAS: detectar niveles raros y marcarlos NA ---
+# Definimos "outlier categórico" como nivel raro por baja frecuencia global.
+# Puedes ajustar min_prop y min_count según tu tamaño muestral.
+min_prop  <- 0.01   # <1% de los casos
+min_count <- 20     # o menos de 20 observaciones
+
+# Aseguramos tipo factor (recomendado)
+for (v in varCat) {
+  if (is.character(datos[[v]])) datos[[v]] <- factor(datos[[v]])
 }
 
+# Calcular niveles raros por variable categórica (global)
+rare_levels_list <- lapply(varCat, function(v) {
+  x <- datos[[v]]
+  if (!is.factor(x)) x <- factor(x)
+  if (nlevels(x) <= 1) return(character(0))
+  tbl <- table(x, useNA = "no")
+  n   <- sum(tbl)
+  prop <- tbl / n
+  names(tbl)[(prop < min_prop) | (tbl < min_count)]
+})
+names(rare_levels_list) <- varCat
 
-## --- 3) Función de distancia euclídea "pairwise" ajustada por missingness ---
-## d_ij = sqrt( sum((xi-xj)^2 over m) * (p / m) ), con m vars observadas en el par
-pairwise_dist_row <- function(i, Xs) {
-  xi <- Xs[i, ]
-  # Máscara NA por columnas respecto xi (TRUE si xi es no-NA)
-  mask_i <- !is.na(xi)
-  d <- rep(NA_real_, n)
-  for (j in 1:n) {
-    if (j == i) next
-    xj <- Xs[j, ]
-    mask <- mask_i & !is.na(xj)
-    m <- sum(mask)
-    if (m == 0) {
-      d[j] <- NA_real_
-    } else {
-      diff2 <- xi[mask] - xj[mask]
-      d[j] <- sqrt(sum(diff2 * diff2) * (p / m))
-    }
-  }
-  d
+# Marcar como NA los niveles raros (global, igual que con numéricas: no usamos idx_targets aquí)
+for (v in varCat) {
+  rare_lvls <- rare_levels_list[[v]]
+  if (length(rare_lvls) == 0) next
+  datos[[v]][datos[[v]] %in% rare_lvls] <- NA
 }
 
-## --- 4) Obtener el k-NN distance para cada índice objetivo respecto a TODO el dataset ---
-get_knn_dist <- function(i, Xs, k = 1) {
-  d <- pairwise_dist_row(i, Xs)
-  # Ordenar ignorando NAs y excluyendo la propia observación
-  vec <- sort(d[!is.na(d)], partial = k)
-  if (length(vec) < k) return(NA_real_)
-  vec[k]
-}
+# --- 4) Escribir de vuelta las numéricas sin outliers en datos ---
+datos[, varNum] <- X_no_outliers
 
-## --- 5) Calcular scores para tus 100 observaciones ---
-scores_res <- vapply(idx_targets, function(i) get_knn_dist(i, Xs, k = k), numeric(1))
-
-resultado_res_knn <- data.frame(
-  fila = idx_targets,
-  score_knn = scores_res
-)
-
-## --- (Opcional) Si quieres una versión 'avg_k' (media de las k distancias más cercanas) ---
-get_knn_avgdist <- function(i, Xs, k = 5) {
-  d <- pairwise_dist_row(i, Xs)
-  vec <- sort(d[!is.na(d)], partial = k)
-  if (length(vec) < k) return(NA_real_)
-  mean(vec[1:k])
-}
-# ejemplo: avg_scores_res <- vapply(idx_targets, function(i) get_knn_avgdist(i, Xs, k = 5), numeric(1))
-
-## --- (Opcional) Normalizaciones monótonas para alinear la "escala" de do_knno ---
-## Mantienen el ranking, por si do_knno aplica alguna de estas:
-minv <- min(scores_res, na.rm = TRUE); maxv <- max(scores_res, na.rm = TRUE)
-resultado_res_knn$score_minmax_0_1 <- (resultado_res_knn$score_knn - minv) / (maxv - minv)
-
-medv <- median(scores_res, na.rm = TRUE); madv <- mad(scores_res, constant = 1, na.rm = TRUE)
-resultado_res_knn$score_robust_z <- (resultado_res_knn$score_knn - medv) / madv
-
-## --- Ordenar por mayor sospecha (score más grande) ---
-resultado_res_knn <- resultado_res_knn[order(-resultado_res_knn$score_knn), ]
-
-## Ver top
-head(resultado_res_knn, 10)
-```
-
-
-```{r}
-plot(resultado_res_knn$score_robust_z)
-abline(h=3)
-```
-
-```{r}
-outliers <- resultado_res_knn$fila[resultado_res_knn$score_robust_z > 3]
-length(outliers)
-length(outliers)/13186
-```
-Debido a que la cantidad de outliers supongo apenas un 3,15% de las observaciones totales, por simplicidad procedemos a eliminarlos.
-```{r}
-datos<-datos[-outliers,]
+cat("\n✅ Outliers numéricos (IQR) y categóricos (niveles raros) marcados como NA en `datos`.\n")
+cat("Total de NA's ahora: ", sum(is.na(datos)), "\n")
 ```
 
 # 5.NA's
 ```{r, warning=FALSE, include=FALSE}
 library(mice)
 tempData <- mice(datos,m=5,maxit=50,meth='pmm',seed=500)
+datos<-complete(tempData,1)
 ```
+
+Comprobamos
+```{r}
+plot_missing(datos)
+```
+
+
 
 # 6. Feature engineering
 
@@ -1277,8 +1182,8 @@ La representación gráfica muestra una evidencia clara de correlación entre la
 Identificamos si existen combinaciones lineales entre las variables predictoras, otra medida que nos informa acerca de la posible correlación existente entre ellas. 
 
 ```{r, warning=FALSE}
-datos_num_na <- tidyr::drop_na(datos_num) # Es necesario eliminar los NA.
-(combos <- findLinearCombos(datos_num_na[,-c(1,13)]))
+#datos_num_na <- tidyr::drop_na(datos_num) # Es necesario eliminar los NA.
+(combos <- findLinearCombos(datos_num[,-c(1,12)]))
 ```
 
 Mediante este método, no se detectan combinaciones lineales entre las variables. Esto conlleva a deducir que no hay ninguna variable que contenga esencialmente la misma información que otra desde una perspectiva lineal.
@@ -1293,7 +1198,7 @@ library(caret)
 
 # Paso 1: Preparar los datos
 datos_num <- datos[, sapply(datos, is.numeric)]
-datos_num <- na.omit(datos_num)
+#datos_num <- na.omit(datos_num)
 
 # Separar variable objetivo
 target <- datos_num$song_popularity
@@ -1542,7 +1447,7 @@ cat("1. PREPARANDO DATOS PARA ANÁLISIS...\n")
 
 # Usar las 7 variables óptimas del método RFE (con las transformaciones aplicadas)
 
-variables_para_analisis <- c("danceability", "speechiness_boxcox", "liveness_boxcox", "instrumentalness", "acousticness_sqrt", "loudness", "audio_valence")
+variables_para_analisis <- c("danceability", "speechiness", "liveness_boxcox", "instrumentalness", "acousticness_boxcox", "loudness", "audio_valence")
 
 # Crear dataset solo con estas variables (excluir objetivo)
 datos_analisis <- datos_transformados[, variables_para_analisis]
@@ -1590,9 +1495,9 @@ cat("\n   • Componentes que explican >10% varianza: PC",
     paste(componentes_importantes, collapse = ", PC"), "\n", sep = "")
 ```
 
-El **análisis** de **componentes principales** sobre las **7 variables óptimas** revela una estructura dimensional bien definida. Los primeros **5 componentes** explican individualmente **más del 10% de la varianza**, acumulando **86.7%** de la **información total**.
+El **análisis** de **componentes principales** sobre las **7 variables óptimas** revela una estructura dimensional bien definida. Los primeros **5 componentes** explican individualmente **más del 10% de la varianza**, acumulando **83.4%** de la **información total**.
 
-PC1 (29%) emerge como la dimensión principal, capturando casi un tercio de la variabilidad del conjunto de datos. La **distribución gradual** de la **varianza** entre los componentes indica que **ninguna** **variable** **domina** excesivamente el **análisis**, sino que **todas** **contribuyen** de manera **balanceada** a las diferentes dimensiones latentes.
+PC1 (23.6%) emerge como la dimensión principal, capturando casi un cuarto de la variabilidad del conjunto de datos. La **distribución gradual** de la **varianza** entre los componentes indica que **ninguna** **variable** **domina** excesivamente el **análisis**, sino que **todas** **contribuyen** de manera **balanceada** a las diferentes dimensiones latentes.
 
 Este resultado confirma que las **7 variables seleccionadas** por **RFE** contienen información complementaria y valiosa para el modelo, justificando la retención de múltiples componentes que capturan distintas facetas de las características musicales relevantes para predecir la popularidad.
 
@@ -1628,7 +1533,7 @@ if(length(componentes_importantes) > 0) {
 
 
 ```{r}
-dat<-datos_transformados[,c("speechiness_boxcox", "liveness_boxcox", "acousticness_sqrt", "danceability", "audio_valence", "loudness", "instrumentalness")]
+dat<-datos_transformados[,c("speechiness", "liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence", "loudness", "instrumentalness")]
 
 library("corrplot")
 
@@ -1636,17 +1541,17 @@ matriz_corr <- cor(dat)
 corrplot(matriz_corr, method = "circle")
 ```
 
-Dado que en el Análisis de Componentes Principales ha dado como resultado que con **5 componentes principales** se explica más de un 85% de la variabilidad de la variable de respuesta, solo es necesario considerar 5 variables como predictoras. En este gráfico de correlaciones se observa que entre $loudness$ y $acousticness_sqrt$ la correlación sigue siendo bastante elevada. Esto significa que una variable ya está explicada por otra, así que se decide suprimir **loudness**. 
+Dado que en el Análisis de Componentes Principales ha dado como resultado que con **5 componentes principales** se explica más de un 83% de la variabilidad de la variable de respuesta, solo es necesario considerar 5 variables como predictoras. En este gráfico de correlaciones se observa que entre $loudness$ y $acousticness_boxcox$ la correlación sigue siendo algo elevada. Esto significa que una variable ya está explicada por otra, así que se decide suprimir **loudness**. 
 
 Por otra parte, como la variable $instrumentalness$ no reduce significativamente el sesgo mediante ninguna transformación, para evitar que este efecto pueda repercutir negativamente en la predicción del modelo, se decide eliminarla. 
 
-Por lo tanto, las 5 variables seleccionadas son: $\text{speechiness_boxcox, liveness_boxcox, acousticness_sqrt, danceability, audio_valence}$
+Por lo tanto, las 5 variables seleccionadas son: $\text{speechiness, liveness_boxcox, acousticness_boxcox, danceability, audio_valence}$
 
 # 7. KNN
 
 Base de datos con las variables seleccionadas y sus transformaciones
 ```{r}
-datos_prepro<-datos_final[,c("speechiness_boxcox", "liveness_boxcox", "acousticness_sqrt", "danceability", "audio_valence")]
+datos_prepro<-datos_final[,c("speechiness", "liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence")]
 datos_prepro$song_popularity<-datos_num$song_popularity
 # View(datos_prepro)
 ```
@@ -1741,11 +1646,11 @@ best_combined_k <- results$k[which.min(results$score)]
 cat("Mejor k combinado:", best_combined_k, "\n")
 ```
 
-Por lo tanto, el valor óptimo de k es **k=17**. 
+Por lo tanto, el valor óptimo de k es **k=19**. 
 
 ## 7.2 Modelo con k óptimo 
 
-Se usa **k=17** como valor óptimo para realizar el *KNN*.
+Se usa **k=19** como valor óptimo para realizar el *KNN*.
 
 ```{r}
 modelo_knn <- knn.reg(train = X_train, test = X_test, y = y_train, k = 5)
@@ -1758,7 +1663,7 @@ e2 <- abs(y - yp)
 
 # --- RMSE final ---
 rmse <- sqrt(mean(e1))
-cat("RMSE del modelo con k =", 17, ":", rmse, "\n")
+cat("RMSE del modelo con k =", 19, ":", rmse, "\n")
 ```
 
 # 8. Association Rules
