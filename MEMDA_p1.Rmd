@@ -1003,120 +1003,96 @@ Podemos calcular las distancias de Cook para discriminar como outliers aquellas 
 
 ### 4.2.6. K-Nearest Neighbors (KNN) Outlier Score
 
-```{r}
+```{r outlier-detection, warning=FALSE, message=FALSE}
 # --- Paquetes ---
 library(adamethods)
 
-# --- 1) Outliers multivariantes KNN (como ya tenías) ---
+# --- 1) Outliers multivariantes KNN ---
 res_knn <- do_knno(datos[, varNum], k = 1, top_n = 3000)
-idx_targets <- res_knn
 
-# --- 2) NUMÉRICAS: mismo flujo que tu código ---
-X <- datos[, varNum, drop = FALSE]
+# Asegura vector de índices del dataset original
+idx_targets <- sort(unique(as.integer(res_knn)))
+idx_targets_orig <- idx_targets  # guardamos copia
+
+# --- 2) NUMÉRICAS: detección y marcaje de outliers ---
+X <- datos[idx_targets_orig, varNum, drop = FALSE]
 p <- ncol(X)
 
+# Estandarización segura
 std_col <- function(v) {
   mu <- mean(v, na.rm = TRUE)
   sdv <- sd(v, na.rm = TRUE)
-  if (is.na(sdv) || sdv == 0) return((v - mu))
+  if (is.na(sdv) || sdv == 0) return(v - mu)
   (v - mu) / sdv
 }
 
-Xs <- as.data.frame(lapply(X, std_col))
-Xs <- as.matrix(Xs)
-n <- nrow(Xs)
-
-detect_outliers <- function(x, method = c("zscore", "iqr"), threshold = 3) {
+# Función para detectar outliers (por IQR o Z-score)
+is_outlier <- function(X, method = c("zscore", "iqr"), threshold = 3) {
   method <- match.arg(method)
-  x_noNA <- x[!is.na(x)]
+  if (all(is.na(X))) return(rep(FALSE, length(X)))
   if (method == "zscore") {
-    z <- (x_noNA - mean(x_noNA)) / sd(x_noNA)
-    outliers <- which(abs(z) > threshold)
-  } else {
-    q1 <- quantile(x_noNA, 0.25)
-    q3 <- quantile(x_noNA, 0.75)
-    iqr <- q3 - q1
-    lower <- q1 - 1.5 * iqr
-    upper <- q3 + 1.5 * iqr
-    outliers <- which(x_noNA < lower | x_noNA > upper)
-  }
-  length(outliers)
-}
-
-outlier_counts <- sapply(X, detect_outliers, method = "iqr")
-outlier_vars <- names(outlier_counts[outlier_counts > 0])
-
-cat("Variables numéricas con outliers detectados:\n"); print(outlier_vars)
-cat("\nNúmero de outliers por variable (numéricas):\n"); print(outlier_counts[outlier_counts > 0])
-
-is_outlier <- function(x, method = c("zscore", "iqr"), threshold = 3) {
-  method <- match.arg(method)
-  res <- rep(FALSE, length(x))
-  if (method == "zscore") {
-    z <- (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
+    z <- (X - mean(X, na.rm = TRUE)) / sd(X, na.rm = TRUE)
     res <- abs(z) > threshold
   } else {
-    q1 <- quantile(x, 0.25, na.rm = TRUE)
-    q3 <- quantile(x, 0.75, na.rm = TRUE)
+    q1 <- quantile(X, 0.25, na.rm = TRUE)
+    q3 <- quantile(X, 0.75, na.rm = TRUE)
     iqr <- q3 - q1
     lower <- q1 - 1.5 * iqr
     upper <- q3 + 1.5 * iqr
-    res <- x < lower | x > upper
+    res <- (X < lower) | (X > upper)
   }
-  res[is.na(x)] <- FALSE
+  res[is.na(res)] <- FALSE
   res
 }
 
-outlier_matrix <- as.data.frame(lapply(X, is_outlier, method = "iqr"))
-
+# Aplicar sobre el subset
 X_no_outliers <- X
 for (v in names(X)) {
-  X_no_outliers[outlier_matrix[[v]], v] <- NA
+  idx_rows <- which(is_outlier(X[[v]], method = "iqr"))
+  if (length(idx_rows)) X_no_outliers[idx_rows, v] <- NA
 }
 
+# Reescalado posterior
 Xs <- as.data.frame(lapply(X_no_outliers, std_col))
 Xs <- as.matrix(Xs)
 
-n <- nrow(Xs)
-idx_targets <- idx_targets[idx_targets <= n]
-if (length(idx_targets) == 0) stop("Ningún índice válido en idx_targets; revisa res_knn o el dataset.")
-
 # --- 3) CATEGÓRICAS: detectar niveles raros y marcarlos NA ---
-# Definimos "outlier categórico" como nivel raro por baja frecuencia global.
-# Puedes ajustar min_prop y min_count según tu tamaño muestral.
 min_prop  <- 0.01   # <1% de los casos
 min_count <- 20     # o menos de 20 observaciones
 
-# Aseguramos tipo factor (recomendado)
+# Asegurar tipo factor
 for (v in varCat) {
   if (is.character(datos[[v]])) datos[[v]] <- factor(datos[[v]])
 }
 
-# Calcular niveles raros por variable categórica (global)
+# Calcular niveles raros
 rare_levels_list <- lapply(varCat, function(v) {
-  x <- datos[[v]]
-  if (!is.factor(x)) x <- factor(x)
-  if (nlevels(x) <= 1) return(character(0))
-  tbl <- table(x, useNA = "no")
+  Xv <- datos[[v]]
+  if (!is.factor(Xv)) Xv <- factor(Xv)
+  if (nlevels(Xv) <= 1) return(character(0))
+  tbl <- table(Xv, useNA = "no")
   n   <- sum(tbl)
   prop <- tbl / n
   names(tbl)[(prop < min_prop) | (tbl < min_count)]
 })
 names(rare_levels_list) <- varCat
 
-# Marcar como NA los niveles raros (global, igual que con numéricas: no usamos idx_targets aquí)
+# Marcar NA los niveles raros
 for (v in varCat) {
   rare_lvls <- rare_levels_list[[v]]
   if (length(rare_lvls) == 0) next
   datos[[v]][datos[[v]] %in% rare_lvls] <- NA
 }
 
-# --- 4) Escribir de vuelta las numéricas sin outliers en datos ---
-datos[, varNum] <- X_no_outliers
+# --- 4) Escribir de vuelta las numéricas sin outliers ---
+stopifnot(nrow(X_no_outliers) == length(idx_targets_orig))
+datos[idx_targets_orig, varNum] <- X_no_outliers
 
 cat("\n✅ Outliers numéricos (IQR) y categóricos (niveles raros) marcados como NA en `datos`.\n")
-cat("Total de NA's ahora: ", sum(is.na(datos)), "\n")
+cat("Total de NA's ahora:", sum(is.na(datos)), "\n")
+
 ```
+
 
 # 5.NA's
 ```{r, warning=FALSE, include=FALSE}
@@ -1495,9 +1471,9 @@ cat("\n   • Componentes que explican >10% varianza: PC",
     paste(componentes_importantes, collapse = ", PC"), "\n", sep = "")
 ```
 
-El **análisis** de **componentes principales** sobre las **7 variables óptimas** revela una estructura dimensional bien definida. Los primeros **5 componentes** explican individualmente **más del 10% de la varianza**, acumulando **83.4%** de la **información total**.
+El **análisis** de **componentes principales** sobre las **7 variables óptimas** revela una estructura dimensional bien definida. Los primeros **5 componentes** explican individualmente **más del 10% de la varianza**, acumulando **84.9%** de la **información total**.
 
-PC1 (23.6%) emerge como la dimensión principal, capturando casi un cuarto de la variabilidad del conjunto de datos. La **distribución gradual** de la **varianza** entre los componentes indica que **ninguna** **variable** **domina** excesivamente el **análisis**, sino que **todas** **contribuyen** de manera **balanceada** a las diferentes dimensiones latentes.
+PC1 (26.8%) emerge como la dimensión principal, capturando casi un cuarto de la variabilidad del conjunto de datos. La **distribución gradual** de la **varianza** entre los componentes indica que **ninguna** **variable** **domina** excesivamente el **análisis**, sino que **todas** **contribuyen** de manera **balanceada** a las diferentes dimensiones latentes.
 
 Este resultado confirma que las **7 variables seleccionadas** por **RFE** contienen información complementaria y valiosa para el modelo, justificando la retención de múltiples componentes que capturan distintas facetas de las características musicales relevantes para predecir la popularidad.
 
@@ -1549,13 +1525,20 @@ Por lo tanto, las 5 variables seleccionadas son: $\text{speechiness, liveness_bo
 
 # 7. KNN
 
-Base de datos con las variables seleccionadas y sus transformaciones
+Base de datos con las variables seleccionadas y sus transformaciones:
+
+1) Modelo con las variables seleccionadas
 ```{r}
-datos_prepro<-datos_final[,c("speechiness", "liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence")]
+datos_prepro<-datos_final[,c("liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence")]
 datos_prepro$song_popularity<-datos_num$song_popularity
 # View(datos_prepro)
 ```
 
+2) Modelo con las 5 componentes
+```{r}
+datos_prepro_comp<-datos_final[,c("Componente_1", "Componente_2", "Componente_3", "Componente_4", "Componente_5" )]
+datos_prepro_comp$song_popularity<-datos_num$song_popularity
+```
 
 ## 7.1 Elección del valor óptimo de k
 
@@ -1573,6 +1556,7 @@ El **Error Percentual Absoluto Medio** (**MAPE**: *Mean Absolute Percentual Erro
 
 Se usan distintos valores impares para *k* y se calcula el **RMSE** y el **MAPE** en cada uno de ellos para escoger aquél que proporciona un error mínimo.
 
+1) Modelo con las 5 variables seleccionadas
 ```{r, warning=FALSE}
 library(FNN)
 set.seed(1994)
@@ -1584,10 +1568,10 @@ datos <- datos_prepro
 train <- datos[default_idx, ]
 testK  <- datos[-default_idx, ]
 
-X_train <- train[, -6]
-X_test  <- testK[, -6]
-y_train <- train[, 6]
-y_test  <- testK[, 6]
+X_train <- train[, -5]
+X_test  <- testK[, -5]
+y_train <- train[, 5]
+y_test  <- testK[, 5]
 
 # Convertimos todo a numérico
 X_train <- data.frame(lapply(X_train, as.numeric))
@@ -1601,7 +1585,7 @@ rmse <- function(actual, predicted) {
 # Función para calcular MAPE
 mape <- function(actual, predicted) {
   non_zero <- actual != 0  # filtrar valores distintos de 0
-  mean(abs((actual[non_zero] - predicted[non_zero]) / actual[non_zero])) * 100
+  100 * mean(abs((actual[non_zero] - predicted[non_zero]) / actual[non_zero]))
 }
 
 # Vector de valores de k a probar
@@ -1638,8 +1622,60 @@ cat("Mejor k según RMSE:", best_rmse_k, " (RMSE =", best_rmse, ")\n")
 cat("Mejor k según MAPE:", best_mape_k, " (MAPE =", best_mape, ")\n")
 ```
 
+2) Modelo con las 5 componentes
+```{r, warning=FALSE}
+library(FNN)
+set.seed(1994)
+
+# División del conjunto
+datos_comp <- datos_prepro_comp
+
+train_comp <- datos_comp[default_idx, ]
+testK_comp  <- datos_comp[-default_idx, ]
+
+X_train_comp <- train_comp[, -6]
+X_test_comp  <- testK_comp[, -6]
+y_train_comp <- train_comp[, 6]
+y_test_comp  <- testK_comp[, 6]
+
+# Convertimos todo a numérico
+X_train_comp <- data.frame(lapply(X_train_comp, as.numeric))
+X_test_comp  <- data.frame(lapply(X_test_comp, as.numeric))
+
+# Calcular RMSE y MAPE para cada k
+results_comp <- data.frame(
+  k = k_values,
+  RMSE = numeric(length(k_values)),
+  MAPE = numeric(length(k_values))
+)
+
+for (i in seq_along(k_values)) {
+  k <- k_values[i]
+  
+  pred_comp <- knn.reg(train = X_train_comp, test = X_test_comp, y = y_train_comp, k = k)$pred
+  
+  results_comp$RMSE[i] <- rmse(y_test_comp, pred_comp)
+  results_comp$MAPE[i] <- mape(y_test_comp, pred_comp)
+}
+
+# Mostrar los resultados
+print(results_comp)
+
+# Encontrar el k con menor RMSE
+best_rmse_k_comp <- results_comp$k[which.min(results_comp$RMSE)]
+best_rmse_comp <- min(results_comp$RMSE)
+
+# Encontrar el k con menor MAPE
+best_mape_k_comp <- results_comp$k[which.min(results_comp$MAPE)]
+best_mape_comp <- min(results_comp$MAPE)
+
+cat("Mejor k según RMSE:", best_rmse_k_comp, " (RMSE =", best_rmse_comp, ")\n")
+cat("Mejor k según MAPE:", best_mape_k_comp, " (MAPE =", best_mape_comp, ")\n")
+```
+
 Dado que el valor de k que minimiza el **RMSE** es 19, y el que minimiza el **MAPE** es 17, se procede a calcular un criterio combinado para elegir el que minimice ambos errores balanceados:
 
+1) Modelo con las 5 variables seleccionadas
 ```{r}
 results$score <- scale(results$RMSE) + scale(results$MAPE)
 best_combined_k <- results$k[which.min(results$score)]
@@ -1648,7 +1684,15 @@ cat("Mejor k combinado:", best_combined_k, "\n")
 
 Por lo tanto, el valor óptimo de k es **k=19**. 
 
+2) Modelo con las 5 componentes
+```{r}
+results_comp$score <- scale(results_comp$RMSE) + scale(results_comp$MAPE)
+best_combined_k_comp <- results_comp$k[which.min(results_comp$score)]
+cat("Mejor k combinado:", best_combined_k_comp, "\n")
+```
 ## 7.2 Modelo con k óptimo 
+
+1) Modelo con las 5 variables seleccionadas
 
 Se usa **k=19** como valor óptimo para realizar el *KNN*.
 
@@ -1664,6 +1708,24 @@ e2 <- abs(y - yp)
 # --- RMSE final ---
 rmse <- sqrt(mean(e1))
 cat("RMSE del modelo con k =", 19, ":", rmse, "\n")
+```
+
+2) Modelo con las 5 componentes
+
+Se usa **k=19** como valor óptimo para realizar el *KNN*.
+
+```{r}
+modelo_knn_comp <- knn.reg(train = X_train_comp, test = X_test_comp, y = y_train_comp, k = 19)
+yp_comp <- modelo_knn_comp$pred
+y_comp  <- y_test_comp
+
+# --- Cálculo de errores ---
+e1_comp <- (y_comp - yp_comp)^2
+e2_comp <- abs(y_comp - yp_comp)
+
+# --- RMSE final ---
+rmse_comp <- sqrt(mean(e1_comp))
+cat("RMSE del modelo con k =", 19, ":", rmse_comp, "\n")
 ```
 
 # 8. Association Rules
@@ -2001,119 +2063,94 @@ varCat <- names(clases)[which(clases %in% c("character", "factor"))]
 ```
 
 Outliers
-```{r}
+```{r outlier-detection, warning=FALSE, message=FALSE}
 # --- Paquetes ---
 library(adamethods)
 
-# --- 1) Outliers multivariantes KNN (como ya tenías) ---
+# --- 1) Outliers multivariantes KNN ---
 res_knn <- do_knno(test[, varNum], k = 1, top_n = 3000)
-idx_targets <- res_knn
 
-# --- 2) NUMÉRICAS: mismo flujo que tu código ---
-X <- test[, varNum, drop = FALSE]
+# Asegura vector de índices del dataset original
+idx_targets <- sort(unique(as.integer(res_knn)))
+idx_targets_orig <- idx_targets  # guardamos copia
+
+# --- 2) NUMÉRICAS: detección y marcaje de outliers ---
+X <- test[idx_targets_orig, varNum, drop = FALSE]
 p <- ncol(X)
 
+# Estandarización segura
 std_col <- function(v) {
   mu <- mean(v, na.rm = TRUE)
   sdv <- sd(v, na.rm = TRUE)
-  if (is.na(sdv) || sdv == 0) return((v - mu))
+  if (is.na(sdv) || sdv == 0) return(v - mu)
   (v - mu) / sdv
 }
 
-Xs <- as.data.frame(lapply(X, std_col))
-Xs <- as.matrix(Xs)
-n <- nrow(Xs)
-
-detect_outliers <- function(x, method = c("zscore", "iqr"), threshold = 3) {
+# Función para detectar outliers (por IQR o Z-score)
+is_outlier <- function(X, method = c("zscore", "iqr"), threshold = 3) {
   method <- match.arg(method)
-  x_noNA <- x[!is.na(x)]
+  if (all(is.na(X))) return(rep(FALSE, length(X)))
   if (method == "zscore") {
-    z <- (x_noNA - mean(x_noNA)) / sd(x_noNA)
-    outliers <- which(abs(z) > threshold)
-  } else {
-    q1 <- quantile(x_noNA, 0.25)
-    q3 <- quantile(x_noNA, 0.75)
-    iqr <- q3 - q1
-    lower <- q1 - 1.5 * iqr
-    upper <- q3 + 1.5 * iqr
-    outliers <- which(x_noNA < lower | x_noNA > upper)
-  }
-  length(outliers)
-}
-
-outlier_counts <- sapply(X, detect_outliers, method = "iqr")
-outlier_vars <- names(outlier_counts[outlier_counts > 0])
-
-cat("Variables numéricas con outliers detectados:\n"); print(outlier_vars)
-cat("\nNúmero de outliers por variable (numéricas):\n"); print(outlier_counts[outlier_counts > 0])
-
-is_outlier <- function(x, method = c("zscore", "iqr"), threshold = 3) {
-  method <- match.arg(method)
-  res <- rep(FALSE, length(x))
-  if (method == "zscore") {
-    z <- (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
+    z <- (X - mean(X, na.rm = TRUE)) / sd(X, na.rm = TRUE)
     res <- abs(z) > threshold
   } else {
-    q1 <- quantile(x, 0.25, na.rm = TRUE)
-    q3 <- quantile(x, 0.75, na.rm = TRUE)
+    q1 <- quantile(X, 0.25, na.rm = TRUE)
+    q3 <- quantile(X, 0.75, na.rm = TRUE)
     iqr <- q3 - q1
     lower <- q1 - 1.5 * iqr
     upper <- q3 + 1.5 * iqr
-    res <- x < lower | x > upper
+    res <- (X < lower) | (X > upper)
   }
-  res[is.na(x)] <- FALSE
+  res[is.na(res)] <- FALSE
   res
 }
 
-outlier_matrix <- as.data.frame(lapply(X, is_outlier, method = "iqr"))
-
+# Aplicar sobre el subset
 X_no_outliers <- X
 for (v in names(X)) {
-  X_no_outliers[outlier_matrix[[v]], v] <- NA
+  idx_rows <- which(is_outlier(X[[v]], method = "iqr"))
+  if (length(idx_rows)) X_no_outliers[idx_rows, v] <- NA
 }
 
+# Reescalado posterior
 Xs <- as.data.frame(lapply(X_no_outliers, std_col))
 Xs <- as.matrix(Xs)
 
-n <- nrow(Xs)
-idx_targets <- idx_targets[idx_targets <= n]
-if (length(idx_targets) == 0) stop("Ningún índice válido en idx_targets; revisa res_knn o el dataset.")
-
 # --- 3) CATEGÓRICAS: detectar niveles raros y marcarlos NA ---
-# Definimos "outlier categórico" como nivel raro por baja frecuencia global.
-# Puedes ajustar min_prop y min_count según tu tamaño muestral.
 min_prop  <- 0.01   # <1% de los casos
 min_count <- 20     # o menos de 20 observaciones
 
-# Aseguramos tipo factor (recomendado)
+# Asegurar tipo factor
 for (v in varCat) {
   if (is.character(test[[v]])) test[[v]] <- factor(test[[v]])
 }
 
-# Calcular niveles raros por variable categórica (global)
+# Calcular niveles raros
 rare_levels_list <- lapply(varCat, function(v) {
-  x <- test[[v]]
-  if (!is.factor(x)) x <- factor(x)
-  if (nlevels(x) <= 1) return(character(0))
-  tbl <- table(x, useNA = "no")
+  Xv <- test[[v]]
+  if (!is.factor(Xv)) Xv <- factor(Xv)
+  if (nlevels(Xv) <= 1) return(character(0))
+  tbl <- table(Xv, useNA = "no")
   n   <- sum(tbl)
   prop <- tbl / n
   names(tbl)[(prop < min_prop) | (tbl < min_count)]
 })
 names(rare_levels_list) <- varCat
 
-# Marcar como NA los niveles raros (global, igual que con numéricas: no usamos idx_targets aquí)
+# Marcar NA los niveles raros
 for (v in varCat) {
   rare_lvls <- rare_levels_list[[v]]
   if (length(rare_lvls) == 0) next
   test[[v]][test[[v]] %in% rare_lvls] <- NA
 }
 
-# --- 4) Escribir de vuelta las numéricas sin outliers en datos ---
-test[, varNum] <- X_no_outliers
+# --- 4) Escribir de vuelta las numéricas sin outliers ---
+stopifnot(nrow(X_no_outliers) == length(idx_targets_orig))
+test[idx_targets_orig, varNum] <- X_no_outliers
 
 cat("\n✅ Outliers numéricos (IQR) y categóricos (niveles raros) marcados como NA en `datos`.\n")
-cat("Total de NA's ahora: ", sum(is.na(datos)), "\n")
+cat("Total de NA's ahora:", sum(is.na(test)), "\n")
+
 ```
 
 Na's
@@ -2285,12 +2322,18 @@ if(length(componentes_importantes_test) > 0) {
   cat("   • No se crearon nuevos componentes (poca varianza explicada)\n\n")
 }
 ```
-
+1) Modelo con las 4 variables seleccionadas
 ```{r}
-test_prepro<-test_final[,c("speechiness", "liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence")]
+test_prepro<-test_final[,c("liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence")]
 ```
 
+2) Modelo con las 5 componentes
+```{r}
+test_prepro_comp<-test_final[,c("Componente_1", "Componente_2", "Componente_3", "Componente_4", "Componente_5" )]
+```
 Modelado
+
+1) Modelo con las 4 variables seleccionadas
 ```{r, warning=FALSE}
 library(FNN)
 set.seed(1994)
@@ -2299,9 +2342,9 @@ set.seed(1994)
 train <- datos_prepro
 test  <- test_prepro
 
-X_train <- train[, -6]
+X_train <- train[, -5]
 X_test  <- test
-y_train <- train[, 6]
+y_train <- train[, 5]
 
 # Convertimos todo a numérico
 X_train <- data.frame(lapply(X_train, as.numeric))
@@ -2313,19 +2356,42 @@ modelo_knn_test <- knn.reg(train = X_train, test = X_test, y = y_train, k = 19)
 yp <- modelo_knn_test$pred
 ```
 
+2) Modelo con las 5 componentes
+```{r, warning=FALSE}
+library(FNN)
+set.seed(1994)
+
+# División del conjunto
+train_comp <- datos_prepro_comp
+test_comp  <- test_prepro_comp
+
+X_train_comp <- train_comp[, -6]
+X_test_comp  <- test_comp
+y_train_comp <- train_comp[, 6]
+
+# Convertimos todo a numérico
+X_train_comp <- data.frame(lapply(X_train_comp, as.numeric))
+X_test_comp  <- data.frame(lapply(X_test_comp, as.numeric))
+```
+
+```{r}
+modelo_knn_test_comp <- knn.reg(train = X_train_comp, test = X_test_comp, y = y_train_comp, k = 19)
+yp_comp <- modelo_knn_test_comp$pred
+```
+
 ```{r}
 # Crear dataframe de submission
-submission <- data.frame(id = test_num$ID, "song_popularity" = yp)
+#submission3 <- data.frame(id = test_num$ID, "song_popularity" = yp_comp)
 
 # Exportar a CSV (sin comillas ni índice)
-write.table(submission, 
-            file = "submission.csv", 
-            sep = ",",              # separador por comas
-            row.names = FALSE, 
-            col.names = TRUE, 
-            quote = FALSE, 
-            dec = "."               # punto como separador decimal
-)
+#write.table(submission3, 
+#            file = "submission3.csv", 
+#            sep = ",",              # separador por comas
+#            row.names = FALSE, 
+#            col.names = TRUE, 
+#            quote = FALSE, 
+#            dec = "."               # punto como separador decimal
+#)
 ```
 
 
