@@ -622,6 +622,7 @@ wrap_plots(plots, ncol = 4) + plot_annotation(title = "Histogramas (z-score)")
 
 ```
 
+
 ```{r}
 library(tidyr)
 
@@ -1001,21 +1002,30 @@ Un punto con un residuo grande puede considerarse un valor anomalo.
 
 Podemos calcular las distancias de Cook para discriminar como outliers aquellas observaciones que cuenten con un valor superior a 1.
 
-### 4.2.6. K-Nearest Neighbors (KNN) Outlier Score
+### 4.2.6. Local Outlier Factor (LOF)
+```{r}
+#library(Rlof)
+#vars_lof<-c("loudness","danceability","energy")
+#outliers.scores <- Rlof::lof(datos[,vars_lof], k=5)
+```
+
+
+### 4.2.7. K-Nearest Neighbors (KNN) Outlier Score
 
 ```{r outlier-detection, warning=FALSE, message=FALSE}
 # --- Paquetes ---
 library(adamethods)
 
 # --- 1) Outliers multivariantes KNN ---
-res_knn <- do_knno(datos[, varNum], k = 1, top_n = 3000)
+datos_knn<-datos
+res_knn <- do_knno(datos_knn[, varNum], k = 1, top_n = 3000)
 
 # Asegura vector de índices del dataset original
 idx_targets <- sort(unique(as.integer(res_knn)))
 idx_targets_orig <- idx_targets  # guardamos copia
 
 # --- 2) NUMÉRICAS: detección y marcaje de outliers ---
-X <- datos[idx_targets_orig, varNum, drop = FALSE]
+X <- datos_knn[idx_targets_orig, varNum, drop = FALSE]
 p <- ncol(X)
 
 # Estandarización segura
@@ -1062,12 +1072,12 @@ min_count <- 20     # o menos de 20 observaciones
 
 # Asegurar tipo factor
 for (v in varCat) {
-  if (is.character(datos[[v]])) datos[[v]] <- factor(datos[[v]])
+  if (is.character(datos_knn[[v]])) datos_knn[[v]] <- factor(datos_knn[[v]])
 }
 
 # Calcular niveles raros
 rare_levels_list <- lapply(varCat, function(v) {
-  Xv <- datos[[v]]
+  Xv <- datos_knn[[v]]
   if (!is.factor(Xv)) Xv <- factor(Xv)
   if (nlevels(Xv) <= 1) return(character(0))
   tbl <- table(Xv, useNA = "no")
@@ -1081,20 +1091,24 @@ names(rare_levels_list) <- varCat
 for (v in varCat) {
   rare_lvls <- rare_levels_list[[v]]
   if (length(rare_lvls) == 0) next
-  datos[[v]][datos[[v]] %in% rare_lvls] <- NA
+  datos_knn[[v]][datos_knn[[v]] %in% rare_lvls] <- NA
 }
 
 # --- 4) Escribir de vuelta las numéricas sin outliers ---
 stopifnot(nrow(X_no_outliers) == length(idx_targets_orig))
-datos[idx_targets_orig, varNum] <- X_no_outliers
+datos_knn[idx_targets_orig, varNum] <- X_no_outliers
 
 cat("\n✅ Outliers numéricos (IQR) y categóricos (niveles raros) marcados como NA en `datos`.\n")
-cat("Total de NA's ahora:", sum(is.na(datos)), "\n")
+cat("Total de NA's ahora:", sum(is.na(datos_knn)), "\n")
 
+```
+```{r}
+plot_missing(datos_knn)
 ```
 
 
 # 5.NA's
+Imputamos la base de datos original con outliers. Posteriormente se hara el tratamiento de outliers, ya que antes de esta imputación no es posible debido a que todos los metodos requieren de una base de datos completa (sin NA's).
 ```{r, warning=FALSE, include=FALSE}
 library(mice)
 tempData <- mice(datos,m=5,maxit=50,meth='pmm',seed=500)
@@ -1106,6 +1120,138 @@ Comprobamos
 plot_missing(datos)
 ```
 
+## 5.1. Tratamiento de outliers posterior
+
+### 5.1.1. LOF
+
+Trataremos los outliers en las variables en las que detectamos anteriormente valores atípicos univariantemente mediante z-score, el metodo que mejor resultado dió ya que estamos delante de distribuciones asimetricas que hace falta escalar.
+
+```{r}
+tabla_resumen_z3[,c("variable", "n_out_z3")]
+```
+
+```{r}
+# Construir todos los plots
+plots_lof <- lapply(varNum[c(10,1,9,2,4,3,7)], function(v) hist_z3(datos[[v]], v))
+
+# Mostrar en cuadrícula (ajusta ncol según prefieras)
+wrap_plots(plots_lof, ncol = 3) + plot_annotation(title = "Histogramas (z-score)")
+```
+Excluiremos instrumentalness ya que su varianza es pratcicamente nula centrandose su distribución en un intervalo super reducido. 
+```{r}
+library(Rlof)
+datos_scaled<-scale(datos[,varNum])
+outliers_scores_lof<-Rlof::lof(datos_scaled[,varNum[c(1,9,2,4,3,7)]], k=5)
+plot(density(outliers_scores_lof))
+```
+Trataremos como outliers segun lof aquellos que esten fuera del precentil 95% segun los scores.
+```{r}
+umbral_lof<-quantile(outliers_scores_lof,0.95)
+lof<-as.integer(outliers_scores_lof>umbral_lof)
+table(lof)
+```
+### 5.1.2. Mahalanobis
+
+Seguimos excluyendo instrumntalness del conjunto de variables ya que su baja varianza, de modo que la matriz se converiria en singular (no invretible).
+```{r}
+datos_maha<-scale(datos[,varNum[-10]])
+distancia_mahalanobis<-mahalanobis(datos_maha,colMeans(datos_maha),cov(datos_maha))
+plot(density(distancia_mahalanobis))
+```
+```{r}
+umbral_maha<-qchisq(p=0.99, df=ncol(datos_maha))
+mahalanobis<-as.integer(distancia_mahalanobis>umbral_maha)
+table(mahalanobis)
+528/13186
+```
+Tenemos que hacer uso del mahalanobis robusto ya que en nuestra bbdd no podemos aproximar la ditribución de las distancias a una chiquadrado debido a que no todas las variables són normales. Para el vector de mahalanobis cogeremos aquellas observaciones fuera del quantil del 99% como outliers.
+```{r}
+umbral_maha<-quantile(distancia_mahalanobis, 0.99)
+mahalanobis<-as.integer(distancia_mahalanobis>umbral_maha)
+table(mahalanobis)
+```
+### 5.1.3. Mahalanobis Robusto
+```{r}
+library(chemometrics)
+dis<-chemometrics::Moutlier(datos_maha, quantile=0.99, plot=TRUE)
+```
+```{r}
+umbral_mcd<-quantile(dis$rd,0.99)
+mcd<-as.integer(dis$rd>umbral_mcd)
+table(mcd)
+```
+### 5.1.4. Isolation Forest
+
+```{r}
+library(solitude)
+library(tidyverse)
+#datos escalados con solo numericas y excluyendo instrentalness
+datos_iso<-scale(datos[,varNum[-10]])
+isoforest<-isolationForest$new(
+  sample_size = as.integer(nrow(datos_iso)/2),
+  num_trees = 500,
+  replace = TRUE,
+  seed=123
+)
+isoforest$fit(dataset=datos_iso)
+pred_iso<-isoforest$predict(data=datos_iso)
+head(pred_iso)
+```
+```{r}
+umbral_iso <- quantile(pred_iso$anomaly_score, 0.95)
+iso<-as.integer(pred_iso$anomaly_score>umbral_iso)
+table(iso)
+```
+### 5.1.5. Ensbamble de metodos
+
+Para evitar la dependencia de un único criterio y aumentar la robustez del análisis, se utilizaron tres métodos complementarios: LOF (densidad local), Mahalanobis clásico (distancia global), Mahalanobis robusto MCD (distancia robusta al núcleo multivariante) y Isolation Forest (aislamiento en particiones aleatorias). La clasificación final de outliers se obtiene mediante una regla de consenso (‘ensembling’), asignando una observación como outlier únicamente cuando al menos dos métodos la detectaron como tal.
+
+```{r}
+mat_out <- cbind(lof, mahalanobis, mcd, iso)
+outlier<-as.integer(rowSums(mat_out)>=2)
+colSums(cbind(mat_out, outlier))
+table(outlier)
+```
+```{r}
+library(plotly)
+
+# Seleccionamos las variables
+vars_plot <- c("liveness", "speechiness", "loudness")
+
+# Usamos los datos escalados SOLO para estas 3 variables
+datos_plot <- as.data.frame(scale(datos[, vars_plot]))
+
+# Añadimos el vector outlier final
+datos_plot$outlier <- factor(outlier, labels = c("Normal", "Outlier"))
+
+# Gráfico 3D
+plot_ly(
+  data = datos_plot,
+  x = ~liveness,
+  y = ~speechiness,
+  z = ~loudness,
+  color = ~outlier,
+  colors = c("Normal" = "black", "Outlier" = "red"),
+  type = "scatter3d",
+  mode = "markers",
+  marker = list(size = 3)
+) %>%
+  layout(
+    title = "Visualización 3D de Outliers (Ensamble)",
+    scene = list(
+      xaxis = list(title = "liveness (scaled)"),
+      yaxis = list(title = "speechiness (scaled)"),
+      zaxis = list(title = "loudness (scaled)")
+    )
+  )
+```
+Vemos que la detección la tomamos como buena, ya que graficamente los puntos detectados como outliers son aquellos que estan fuera de la nube de puntos con alta densidad. Los que esten en rojo cerca de la nube tal vez no presentan mucha lejania respecto a estas tres variables pero si que la presenten en alguna d elas otras variables con valores atipicos.
+
+Por lo tanto añadimos esta variable artificial "outlier" a la base de datos original.
+
+```{r}
+datos$outlier<-outlier
+```
 
 
 # 6. Feature engineering
@@ -1523,13 +1669,17 @@ Por otra parte, como la variable $instrumentalness$ no reduce significativamente
 
 Por lo tanto, las 5 variables seleccionadas son: $\text{speechiness, liveness_boxcox, acousticness_boxcox, danceability, audio_valence}$
 
+```{r}
+datos_final$outlier<-datos$outlier
+```
+
 # 7. KNN
 
 Base de datos con las variables seleccionadas y sus transformaciones:
 
 1) Modelo con las variables seleccionadas
 ```{r}
-datos_prepro<-datos_final[,c("liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence")]
+datos_prepro<-datos_final[,c("liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","outlier")]
 datos_prepro$song_popularity<-datos_num$song_popularity
 # View(datos_prepro)
 ```
@@ -1568,10 +1718,10 @@ datos <- datos_prepro
 train <- datos[default_idx, ]
 testK  <- datos[-default_idx, ]
 
-X_train <- train[, -5]
-X_test  <- testK[, -5]
-y_train <- train[, 5]
-y_test  <- testK[, 5]
+X_train <- train[, -6]
+X_test  <- testK[, -6]
+y_train <- train[, 6]
+y_test  <- testK[, 6]
 
 # Convertimos todo a numérico
 X_train <- data.frame(lapply(X_train, as.numeric))
@@ -1585,7 +1735,7 @@ rmse <- function(actual, predicted) {
 # Función para calcular MAPE
 mape <- function(actual, predicted) {
   non_zero <- actual != 0  # filtrar valores distintos de 0
-  100 * mean(abs((actual[non_zero] - predicted[non_zero]) / actual[non_zero]))
+  100 * mean(abs((actual[non_zero] - predicted[non_zero]) / (actual[non_zero])))
 }
 
 # Vector de valores de k a probar
@@ -1697,7 +1847,7 @@ cat("Mejor k combinado:", best_combined_k_comp, "\n")
 Se usa **k=19** como valor óptimo para realizar el *KNN*.
 
 ```{r}
-modelo_knn <- knn.reg(train = X_train, test = X_test, y = y_train, k = 19)
+modelo_knn <- knn.reg(train = X_train, test = X_test, y = y_train, k = 17)
 yp <- modelo_knn$pred
 y  <- y_test
 
@@ -1707,7 +1857,7 @@ e2 <- abs(y - yp)
 
 # --- RMSE final ---
 rmse <- sqrt(mean(e1))
-cat("RMSE del modelo con k =", 19, ":", rmse, "\n")
+cat("RMSE del modelo con k =", 17, ":", rmse, "\n")
 ```
 
 2) Modelo con las 5 componentes
@@ -2049,7 +2199,7 @@ cat("Support indica la frecuencia del patrón en las transacciones.\n")
 
 # 9. Submission
 
-Preliminares
+## 9.1. Preliminares
 ```{r}
 test$key <- factor(test$key)
 test$audio_mode <- factor(test$audio_mode) # 0 = menor, 1 = mayor
@@ -2062,105 +2212,118 @@ varNum<-varNum[!varNum %in% c("ID")]
 varCat <- names(clases)[which(clases %in% c("character", "factor"))]
 ```
 
-Outliers
-```{r outlier-detection, warning=FALSE, message=FALSE}
-# --- Paquetes ---
-library(adamethods)
-
-# --- 1) Outliers multivariantes KNN ---
-res_knn <- do_knno(test[, varNum], k = 1, top_n = 3000)
-
-# Asegura vector de índices del dataset original
-idx_targets <- sort(unique(as.integer(res_knn)))
-idx_targets_orig <- idx_targets  # guardamos copia
-
-# --- 2) NUMÉRICAS: detección y marcaje de outliers ---
-X <- test[idx_targets_orig, varNum, drop = FALSE]
-p <- ncol(X)
-
-# Estandarización segura
-std_col <- function(v) {
-  mu <- mean(v, na.rm = TRUE)
-  sdv <- sd(v, na.rm = TRUE)
-  if (is.na(sdv) || sdv == 0) return(v - mu)
-  (v - mu) / sdv
-}
-
-# Función para detectar outliers (por IQR o Z-score)
-is_outlier <- function(X, method = c("zscore", "iqr"), threshold = 3) {
-  method <- match.arg(method)
-  if (all(is.na(X))) return(rep(FALSE, length(X)))
-  if (method == "zscore") {
-    z <- (X - mean(X, na.rm = TRUE)) / sd(X, na.rm = TRUE)
-    res <- abs(z) > threshold
-  } else {
-    q1 <- quantile(X, 0.25, na.rm = TRUE)
-    q3 <- quantile(X, 0.75, na.rm = TRUE)
-    iqr <- q3 - q1
-    lower <- q1 - 1.5 * iqr
-    upper <- q3 + 1.5 * iqr
-    res <- (X < lower) | (X > upper)
-  }
-  res[is.na(res)] <- FALSE
-  res
-}
-
-# Aplicar sobre el subset
-X_no_outliers <- X
-for (v in names(X)) {
-  idx_rows <- which(is_outlier(X[[v]], method = "iqr"))
-  if (length(idx_rows)) X_no_outliers[idx_rows, v] <- NA
-}
-
-# Reescalado posterior
-Xs <- as.data.frame(lapply(X_no_outliers, std_col))
-Xs <- as.matrix(Xs)
-
-# --- 3) CATEGÓRICAS: detectar niveles raros y marcarlos NA ---
-min_prop  <- 0.01   # <1% de los casos
-min_count <- 20     # o menos de 20 observaciones
-
-# Asegurar tipo factor
-for (v in varCat) {
-  if (is.character(test[[v]])) test[[v]] <- factor(test[[v]])
-}
-
-# Calcular niveles raros
-rare_levels_list <- lapply(varCat, function(v) {
-  Xv <- test[[v]]
-  if (!is.factor(Xv)) Xv <- factor(Xv)
-  if (nlevels(Xv) <= 1) return(character(0))
-  tbl <- table(Xv, useNA = "no")
-  n   <- sum(tbl)
-  prop <- tbl / n
-  names(tbl)[(prop < min_prop) | (tbl < min_count)]
-})
-names(rare_levels_list) <- varCat
-
-# Marcar NA los niveles raros
-for (v in varCat) {
-  rare_lvls <- rare_levels_list[[v]]
-  if (length(rare_lvls) == 0) next
-  test[[v]][test[[v]] %in% rare_lvls] <- NA
-}
-
-# --- 4) Escribir de vuelta las numéricas sin outliers ---
-stopifnot(nrow(X_no_outliers) == length(idx_targets_orig))
-test[idx_targets_orig, varNum] <- X_no_outliers
-
-cat("\n✅ Outliers numéricos (IQR) y categóricos (niveles raros) marcados como NA en `datos`.\n")
-cat("Total de NA's ahora:", sum(is.na(test)), "\n")
-
-```
-
-Na's
+## 9.2. Na's
 ```{r, warning=FALSE, include=FALSE}
 library(mice)
 tempData <- mice(test,m=5,maxit=50,meth='pmm',seed=500)
 test<-complete(tempData,1)
 ```
 
-Ingenieria de variables
+## 9.3. Outliers
+
+Lof
+```{r}
+library(Rlof)
+test_scaled<-scale(test[,varNum])
+test_scores_lof<-Rlof::lof(test_scaled[,varNum[c(1,9,2,4,3,7)]], k=5)
+plot(density(test_scores_lof))
+```
+```{r}
+umbral_test_lof<-quantile(test_scores_lof,0.95)
+lof_test<-as.integer(test_scores_lof>umbral_test_lof)
+table(lof_test)
+```
+
+Mahalanobis
+```{r}
+test_maha<-scale(test[,varNum[-10]])
+distancia_test_mahalanobis<-mahalanobis(test_maha,colMeans(test_maha),cov(test_maha))
+plot(density(distancia_test_mahalanobis))
+```
+```{r}
+umbral_test_maha<-quantile(distancia_test_mahalanobis, 0.99)
+mahalanobis_test<-as.integer(distancia_test_mahalanobis>umbral_test_maha)
+table(mahalanobis_test)
+```
+
+Mahalanobis Robusto (MCD)
+```{r}
+library(chemometrics)
+dis_test<-chemometrics::Moutlier(test_maha, quantile=0.99, plot=TRUE)
+```
+```{r}
+umbral_test_mcd<-quantile(dis_test$rd,0.99)
+mcd_test<-as.integer(dis_test$rd>umbral_test_mcd)
+table(mcd_test)
+```
+
+Isolation Forest
+```{r}
+library(solitude)
+library(tidyverse)
+#datos escalados con solo numericas y excluyendo instrentalness
+test_iso<-scale(test[,varNum[-10]])
+isoforest_test<-isolationForest$new(
+  sample_size = as.integer(nrow(test_iso)/2),
+  num_trees = 500,
+  replace = TRUE,
+  seed=123
+)
+isoforest_test$fit(dataset=test_iso)
+pred_test_iso<-isoforest_test$predict(data=test_iso)
+head(pred_test_iso)
+```
+```{r}
+umbral_test_iso <- quantile(pred_test_iso$anomaly_score, 0.95)
+iso_test<-as.integer(pred_test_iso$anomaly_score>umbral_test_iso)
+table(iso_test)
+```
+
+Ensamble de metodos
+```{r}
+mat_out_test <- cbind(lof_test, mahalanobis_test, mcd_test, iso_test)
+outlier_test<-as.integer(rowSums(mat_out_test)>=2)
+colSums(cbind(mat_out_test, outlier_test))
+table(outlier_test)
+```
+```{r}
+library(plotly)
+
+# Seleccionamos las variables
+vars_plot <- c("liveness", "speechiness", "loudness")
+
+# Usamos los datos escalados SOLO para estas 3 variables
+test_plot <- as.data.frame(scale(test[, vars_plot]))
+
+# Añadimos el vector outlier final
+test_plot$outlier <- factor(outlier_test, labels = c("Normal", "Outlier"))
+
+# Gráfico 3D
+plot_ly(
+  data = test_plot,
+  x = ~liveness,
+  y = ~speechiness,
+  z = ~loudness,
+  color = ~outlier_test,
+  colors = c("Normal" = "black", "Outlier" = "red"),
+  type = "scatter3d",
+  mode = "markers",
+  marker = list(size = 3)
+) %>%
+  layout(
+    title = "Visualización 3D de Outliers (Ensamble)",
+    scene = list(
+      xaxis = list(title = "liveness (scaled)"),
+      yaxis = list(title = "speechiness (scaled)"),
+      zaxis = list(title = "loudness (scaled)")
+    )
+  )
+```
+```{r}
+test$outlier<-outlier_test
+```
+
+## 9.4. Ingenieria de variables
 
 Analisis
 ```{r transformacion_variables, warning=FALSE}
@@ -2322,9 +2485,17 @@ if(length(componentes_importantes_test) > 0) {
   cat("   • No se crearon nuevos componentes (poca varianza explicada)\n\n")
 }
 ```
+```{r}
+test_final$outlier<-outlier_test
+```
+
+## 9.5. Modelos 
+
+### 9.5.1. KNN
+
 1) Modelo con las 4 variables seleccionadas
 ```{r}
-test_prepro<-test_final[,c("liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence")]
+test_prepro<-test_final[,c("liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","outlier")]
 ```
 
 2) Modelo con las 5 componentes
@@ -2333,7 +2504,7 @@ test_prepro_comp<-test_final[,c("Componente_1", "Componente_2", "Componente_3", 
 ```
 Modelado
 
-1) Modelo con las 4 variables seleccionadas
+1) Modelo con las 5 variables seleccionadas
 ```{r, warning=FALSE}
 library(FNN)
 set.seed(1994)
@@ -2342,9 +2513,9 @@ set.seed(1994)
 train <- datos_prepro
 test  <- test_prepro
 
-X_train <- train[, -5]
+X_train <- train[, -6]
 X_test  <- test
-y_train <- train[, 5]
+y_train <- train[, 6]
 
 # Convertimos todo a numérico
 X_train <- data.frame(lapply(X_train, as.numeric))
@@ -2381,17 +2552,17 @@ yp_comp <- modelo_knn_test_comp$pred
 
 ```{r}
 # Crear dataframe de submission
-#submission3 <- data.frame(id = test_num$ID, "song_popularity" = yp_comp)
+submission4 <- data.frame(id = test_num$ID, "song_popularity" = yp)
 
 # Exportar a CSV (sin comillas ni índice)
-#write.table(submission3, 
-#            file = "submission3.csv", 
-#            sep = ",",              # separador por comas
-#            row.names = FALSE, 
-#            col.names = TRUE, 
-#            quote = FALSE, 
-#            dec = "."               # punto como separador decimal
-#)
+write.table(submission4, 
+            file = "submission4.csv", 
+            sep = ",",              # separador por comas
+            row.names = FALSE, 
+            col.names = TRUE, 
+            quote = FALSE, 
+            dec = "."               # punto como separador decimal
+)
 ```
 
 
