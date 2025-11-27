@@ -1919,50 +1919,43 @@ str(datos_prepro)
 Transformamos la base de datos en un archivo de transacciones. Para ello, todas las variables deben ser categóricas. 
 
 ```{r}
-# Verificar estructura de los datos
-cat("=== ESTRUCTURA INICIAL DE LOS DATOS ===\n")
-str(datos_prepro)
-summary(datos_prepro)
+library(arules)
+library(arulesViz)
+library(dplyr)
 
-# Convertir variables lógicas a factores (si aplica)
-cat("\n=== CONVERSIÓN DE VARIABLES ===\n")
-for (j in 1:ncol(datos_prepro)) {
-  if(class(datos_prepro[,j]) == "logical") {
-    datos_prepro[,j] <- as.factor(datos_prepro[,j])
-    cat("Convertida columna", j, names(datos_prepro)[j], "de logical a factor\n")
+datos_disc <- datos_prepro
+
+for (col in names(datos_disc)) {
+  
+  if (is.numeric(datos_disc[[col]])) {
+    
+    # Intentar con 3 breaks (percentiles)
+    tmp <- try(
+      discretize(datos_disc[[col]],
+                 method = "frequency",
+                 breaks = 3),
+      silent = TRUE
+    )
+    
+    # Si falla o produce intervalos degenerados → usar 2 breaks
+    if (inherits(tmp, "try-error") || length(levels(tmp)) < 2) {
+      tmp <- discretize(datos_disc[[col]],
+                        method = "frequency",
+                        breaks = 2)
+    }
+    
+    datos_disc[[col]] <- as.factor(tmp)
   }
 }
 
-# Verificar estructura final
-cat("\n=== ESTRUCTURA FINAL ===\n")
-str(datos_prepro)
+str(datos_disc)
 ```
 
 ## 8.2 Conversión a transacciones
 
 ```{r}
-cat("=== CONVERSIÓN A TRANSACCIONES ===\n")
-
-# Método robusto de conversión
-tryCatch({
-  datos_transacciones <- as(datos_prepro, "transactions")
-}, error = function(e) {
-  cat("Error en conversión directa, usando método alternativo...\n")
-  # Convertir todas las columnas a factores primero
-  datos_prepro_factors <- as.data.frame(lapply(datos_prepro, as.factor))
-  datos_transacciones <- as(datos_prepro_factors, "transactions")
-})
-
-# Resumen de las transacciones
-cat("\n=== RESUMEN DE TRANSACCIONES ===\n")
-summary(datos_transacciones)
-
-# Visualizar items más frecuentes
-itemFrequencyPlot(datos_transacciones, 
-                  topN = 15,
-                  main = "15 Características Musicales Más Frecuentes",
-                  col = "steelblue",
-                  type = "relative")
+trans <- as(datos_disc, "transactions")
+summary(trans)
 ```
 
 ```{r}
@@ -1980,7 +1973,6 @@ SIZE <- size(datos_transacciones)
 summary(SIZE)
 quantile(SIZE, probs = seq(0,1,0.1))
 ```
-Se puede comprobar que la base de datos transaccional contiene 373 transacciones y 1484 ítems. Del mismo modo, se observa que se podrán hacer itemsets de hasta tamaño 5. 
 
 ## 8.3 Análisis de itemsets frecuentes
 
@@ -2036,7 +2028,7 @@ if (itemsets_encontrados) {
 
 ## 8.4 Generación de Reglas de asociación
 
-```{r}
+```{r, eval=F, include=F}
 cat("=== GENERACIÓN DE REGLAS DE ASOCIACIÓN ===\n")
 
 # Probar diferentes combinaciones de parámetros
@@ -2092,91 +2084,83 @@ if (reglas_encontradas) {
 }
 ```
 
+**Código modificado**
+
+```{r}
+reglas <- apriori(
+  trans,
+  parameter = list(
+    support = 0.03,
+    confidence = 0.5,
+    minlen = 2,
+    maxlen = 4
+  )
+)
+
+inspect(head(sort(reglas, by = "lift"), 10))
+```
 
 ## 8.5 Análisis de Popularidad
 
 ```{r}
-cat("=== ANÁLISIS SIMPLIFICADO DE POPULARIDAD ===\n")
+cat("=== 8.5 ANÁLISIS DE POPULARIDAD ===\n")
 
-# Enfoque directo - solo las mejores reglas
-labels_transacciones <- itemLabels(datos_transacciones)
-patron_popularidad <- grep("popular", labels_transacciones, ignore.case = TRUE, value = TRUE)[1]
+# Detectar automáticamente el ítem asociado a la popularidad "alta"
+labels_trans <- itemLabels(trans)
 
-if (!is.na(patron_popularidad)) {
-  cat("Analizando variable:", patron_popularidad, "\n")
-  
-  # Solo generar reglas muy específicas y de alta calidad
-  reglas_popularidad <- tryCatch({
-    reglas <- apriori(datos_transacciones,
-                     parameter = list(
-                       support = 0.03,     # Solo patrones comunes
-                       confidence = 0.7,   # Solo muy confiables  
-                       minlen = 2,
-                       maxlen = 3
-                     ),
-                     appearance = list(rhs = patron_popularidad, default = "lhs"))
-    
-    # Filtrar y limitar
-    reglas_filtradas <- reglas[quality(reglas)$lift > 1.5]
-    head(sort(reglas_filtradas, by = "lift", decreasing = TRUE), 10)  # TOP 10
-    
-  }, error = function(e) {
-    cat("No se pudieron generar reglas específicas\n")
-    return(reglas_interesantes)
-  })
-  
-} else {
-  reglas_popularidad <- head(reglas_interesantes, 10)  # Solo 10 mejores generales
+# Buscamos cualquier etiqueta que incluya el nombre de la variable de popularidad
+pop_items <- grep("pop", labels_trans, ignore.case = TRUE, value = TRUE)
+
+cat("Items que se relacionan con la popularidad encontrados:\n")
+print(pop_items)
+
+# Elegimos el item que representa popularidad ALTA si existe
+patron_popularidad <- grep("alto", pop_items, ignore.case = TRUE, value = TRUE)[1]
+
+# Si no existe "alto", tomamos el primer item de popularidad
+if (is.na(patron_popularidad)) {
+  patron_popularidad <- pop_items[1]
 }
 
-cat("Reglas finales para análisis:", length(reglas_popularidad), "\n")
+cat("\nItem objetivo para popularidad:", patron_popularidad, "\n\n")
 
-if (length(reglas_popularidad) > 0) {
-  cat("\n=== REGLAS DE POPULARIDAD ===\n")
-  inspect(reglas_popularidad)
-}
+# Generación de reglas que predicen popularidad
+reglas_popularidad <- apriori(
+  trans,
+  parameter = list(
+    support = 0.02,      # 2% → suficientemente flexible
+    confidence = 0.5,    # confianza media-alta
+    minlen = 2,
+    maxlen = 4
+  ),
+  appearance = list(rhs = patron_popularidad, default = "lhs")
+)
+
+cat("Total de reglas generadas hacia la popularidad:", length(reglas_popularidad), "\n")
+
+# Filtrado por calidad (lift>1 indica asociación positiva)
+reglas_pop_filtradas <- reglas_popularidad[
+  quality(reglas_popularidad)$lift > 1
+]
+
+cat("Reglas con lift > 1:", length(reglas_pop_filtradas), "\n")
+
+# Seleccionar TOP 10 por lift
+TOP_pop <- head(sort(reglas_pop_filtradas, by = "lift", decreasing = TRUE), 10)
+
+cat("\n=== TOP 10 REGLAS QUE PREDICEN POPULARIDAD ===\n")
+inspect(TOP_pop)
 ```
-## 8.6 Evaluación y visualización de resultados
-
-```{r, warning=FALSE, message=FALSE}
-# install.packages("arulesViz")
-library(arulesViz)
-cat("=== EVALUACIÓN DE REGLAS ===\n")
-
-# Mostrar las mejores reglas
-cat("\n=== MEJORES REGLAS POR LIFT ===\n")
-mejores_reglas <- head(sort(reglas_popularidad, by = "lift", decreasing = TRUE), 15)
-inspect(mejores_reglas)
-
-# Métricas de calidad
-cat("\n=== MÉTRICAS DE CALIDAD ===\n")
-calidad <- quality(mejores_reglas)
-print(summary(calidad))
-
-# Visualizaciones
-cat("\n=== CREANDO VISUALIZACIONES ===\n")
-
-# Scatter plot de las reglas
-plot(mejores_reglas, 
-     method = "scatter", 
-     main = "Distribución de Reglas - Support vs Confidence")
-
-# Gráfico de matriz
-plot(mejores_reglas, 
-     method = "matrix", 
-     main = "Matriz de Reglas")
-
-# Gráfico interactivo (si está disponible)
-tryCatch({
-  plot(mejores_reglas, 
-       method = "graph", 
-       main = "Grafo de Reglas de Asociación")
-}, error = function(e) {
-  cat("Gráfico interactivo no disponible\n")
-})
+```{r}
+appearance = list(rhs = patron_popularidad, default = "lhs")
+appearance
 ```
 
-## 8.7 Exportación de resultados
+```{r}
+summary(train$song_popularity)
+```
+
+## 8.6 Exportación de resultados
 
 ```{r}
 cat("=== EXPORTACIÓN DE RESULTADOS ===\n")
@@ -2192,7 +2176,6 @@ cat("Resultados exportados a 'reglas_asociacion_musica.csv'\n")
 cat("\n=== RESUMEN EJECUTIVO ===\n")
 cat("Total reglas generadas:", length(reglas), "\n")
 cat("Reglas filtradas interesantes:", length(reglas_interesantes), "\n")
-cat("Mejores reglas identificadas:", length(mejores_reglas), "\n")
 cat("Lift máximo:", max(quality(mejores_reglas)$lift), "\n")
 cat("Confidence máximo:", max(quality(mejores_reglas)$confidence), "\n")
 ```
@@ -2532,11 +2515,11 @@ library(ranger)
 ```{r}
 set.seed(1234)
 datos <- datos_prepro
-datos_no0<- datos[datos$song_popularity != 0, ]
-default_idx <- sample(nrow(datos_no0), nrow(datos_no0) * 0.7)
+#datos_no0<- datos[datos$song_popularity != 0, ]
+default_idx <- sample(nrow(datos), nrow(datos) * 0.7)
 
-train <- datos_no0[default_idx, ]
-test  <- datos_no0[-default_idx, ]
+train <- datos[default_idx, ]
+test  <- datos[-default_idx, ]
 ```
 
 
@@ -2548,7 +2531,7 @@ library(ranger)
 require(utils)
 param_grid = expand.grid(num_trees = c(50, 100, 500, 1000, 5000),
              mtry= c(2,3,4,5),max_depth = c(1, 3, 10, 20))
-View(param_grid)
+head(param_grid)
 ```
 
 Ajustamos un modelo con cada combinación de la grid
@@ -2636,9 +2619,72 @@ accuracy <- function(pred, obs, na.rm = FALSE,
 accuracy(round(predicciones,0), test$song_popularity)
 ```
 
-
-
 ## 10.2. Boosting
+
+### 10.2.1. GBM
+```{r}
+library(gbm)
+set.seed(1234)
+datos <- datos_prepro
+#datos_no0<- datos[datos$song_popularity != 0, ]
+default_idx <- sample(nrow(datos), nrow(datos) * 0.7)
+
+train <- datos[default_idx, ]
+test  <- datos[-default_idx, ]
+```
+Modelo
+```{r}
+gbm.fit<-gbm(song_popularity~.,data=train)
+gbm.fit
+summary(gbm.fit)
+```
+Plots
+```{r}
+p1<-plot(gbm.fit, i="danceability")
+p2<-plot(gbm.fit, i="acousticness_boxcox")
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+Predicciones
+```{r}
+pred_boost<-predict(gbm.fit, newdata=test)
+obs<-test$song_popularity
+accuracy(pred_boost,obs)
+```
+
+### 10.2.2. Caret
+```{r}
+library(caret)
+set.seed(1234)
+trControl<-trainControl(method="cv", number=5)
+caret.gbm0 <- train(song_popularity ~ ., method = "gbm", data = train,
+                    trControl = trControl, verbose = FALSE)
+caret.gbm0
+```
+```{r}
+tuneGrid <- data.frame(n.trees =  100, interaction.depth = 3, 
+                       n.minobsinnode = 10, shrinkage = c(0.3, 0.1, 0.05, 0.01, 0.005))
+caret.gbm1 <- train(song_popularity ~ ., method = "gbm", data = train,
+                    tuneGrid = tuneGrid, trControl = trControl, verbose = FALSE)
+caret.gbm1
+```
+Predicciones
+```{r}
+pred_boost_caret <- predict(caret.gbm1, newdata = test)
+accuracy(pred_boost_caret, obs)
+```
+### 10.2.3. Xboost
+```{r}
+library(caret)
+caret.xgb <- train(song_popularity ~ ., method = "xgbTree", 
+                   data = train, trControl = trControl, verbosity = 0)
+caret.xgb
+caret.xgb$bestTune
+```
+Predicciones
+```{r}
+pred_xgboost<-predict(caret.xgb, newdata=test)
+accuracy(pred_xgboost, obs)
+```
 
 # 11. SVM
 
@@ -2942,7 +2988,7 @@ test_final$outlier<-outlier_test
 
 1) Modelo con las 4 variables seleccionadas
 ```{r}
-test_prepro<-test_final[,c("liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","outlier")]
+test_prepro<-test_final[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","outlier")]
 ```
 
 2) Modelo con las 5 componentes
@@ -2960,9 +3006,9 @@ set.seed(1994)
 train <- datos_prepro
 test  <- test_prepro
 
-X_train <- train[, -6]
+X_train <- train[, -7]
 X_test  <- test
-y_train <- train[, 6]
+y_train <- train[, 7]
 
 # Convertimos todo a numérico
 X_train <- data.frame(lapply(X_train, as.numeric))
@@ -3013,12 +3059,124 @@ write.table(submission4,
 ```
 
 ### 12.5.2. CART
-```{r}
 
+### 12.5.3. RF
+
+Creación de la grid search
+```{r}
+library(ranger)
+require(utils)
+param_grid = expand.grid(num_trees = c(50, 100, 500, 1000, 5000),
+             mtry= c(2,3,4,5),max_depth = c(1, 3, 10, 20))
+head(param_grid)
+```
+Ajustamos un modelo con cada combinación de la grid
+```{r}
+oob_error = rep(NA, nrow(param_grid))
+
+for(i in 1:nrow(param_grid)){
+  
+  modelo <- ranger(
+    formula   = song_popularity ~ .,
+    data      = train, 
+    num.trees = param_grid$num_trees[i],
+    mtry      = param_grid$mtry[i],
+    max.depth = param_grid$max_depth[i],
+    seed      = 123
+  )
+  
+  oob_error[i] <- sqrt(modelo$prediction.error)
+}
+```
+Resultados
+```{r}
+library(dplyr)
+library(tidyr)
+
+resultados <- param_grid
+resultados$oob_error <- oob_error
+resultados <- resultados %>% arrange(oob_error)
+resultados
+head(resultados[,4])
+p<-which(resultados[,4]==min(resultados[,4]))
+resultados[p,]
+```
+Bosque óptimo
+```{r}
+set.seed(123)
+modelo  <- ranger(
+  formula   = song_popularity ~ .,
+  data      = train,
+  num.trees = 5000,
+  mtry=2,
+  max.depth = 20,
+  importance= "impurity",
+  seed      = 123
+)
+print(modelo)
+predicciones <- predict(modelo,data = test)
+predicciones
+importancia_pred <- modelo$variable.importance
+sort(importancia_pred,decreasing=TRUE)
+```
+Submission rf 
+```{r}
+yp_rf<-round(predicciones$predictions,0)
+# Crear dataframe de submission
+submission5 <- data.frame(ID = test_num$ID, "song_popularity" = yp_rf)
+
+# Exportar a CSV (sin comillas ni índice)
+write.table(submission5, 
+            file = "submission5.csv", 
+            sep = ",",              # separador por comas
+            row.names = FALSE, 
+            col.names = TRUE, 
+            quote = FALSE, 
+            dec = "."               # punto como separador decimal
+)
 ```
 
-### 12.5.3. Baggging
-
 ### 12.5.4. Boosting
+Con caret
+```{r}
+train <- datos_prepro
+test  <- test_prepro
+```
+
+```{r}
+library(caret)
+set.seed(1234)
+trControl<-trainControl(method="cv", number=5)
+caret.gbm0 <- train(song_popularity ~ ., method = "gbm", data = train,
+                    trControl = trControl, verbose = FALSE)
+caret.gbm0
+```
+```{r}
+tuneGrid <- data.frame(n.trees =  100, interaction.depth = 3, 
+                       n.minobsinnode = 10, shrinkage = c(0.3, 0.1, 0.05, 0.01, 0.005))
+caret.gbm1 <- train(song_popularity ~ ., method = "gbm", data = train,
+                    tuneGrid = tuneGrid, trControl = trControl, verbose = FALSE)
+caret.gbm1
+```
+Predicciones
+```{r}
+pred_boost <- predict(caret.gbm1, newdata = test)
+```
+
+```{r}
+yp_boost<-round(pred_boost,0)
+# Crear dataframe de submission
+submission6 <- data.frame(ID = test_num$ID, "song_popularity" = yp_boost)
+
+# Exportar a CSV (sin comillas ni índice)
+write.table(submission6, 
+            file = "submission6.csv", 
+            sep = ",",              # separador por comas
+            row.names = FALSE, 
+            col.names = TRUE, 
+            quote = FALSE, 
+            dec = "."               # punto como separador decimal
+)
+```
 
 ### 12.5.5. SVM
