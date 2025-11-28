@@ -1954,8 +1954,8 @@ str(datos_disc)
 ## 8.2 Conversión a transacciones
 
 ```{r}
-trans <- as(datos_disc, "transactions")
-summary(trans)
+datos_transacciones <- as(datos_disc, "transactions")
+summary(datos_transacciones)
 ```
 
 ```{r}
@@ -2166,7 +2166,7 @@ summary(train$song_popularity)
 cat("=== EXPORTACIÓN DE RESULTADOS ===\n")
 
 # Crear dataframe con las reglas
-resultados_df <- as(mejores_reglas, "data.frame")
+resultados_df <- as(TOP_pop, "data.frame")
 
 # Exportar a CSV
 write.csv(resultados_df, "reglas_asociacion_musica.csv", row.names = FALSE)
@@ -2176,8 +2176,8 @@ cat("Resultados exportados a 'reglas_asociacion_musica.csv'\n")
 cat("\n=== RESUMEN EJECUTIVO ===\n")
 cat("Total reglas generadas:", length(reglas), "\n")
 cat("Reglas filtradas interesantes:", length(reglas_interesantes), "\n")
-cat("Lift máximo:", max(quality(mejores_reglas)$lift), "\n")
-cat("Confidence máximo:", max(quality(mejores_reglas)$confidence), "\n")
+cat("Lift máximo:", max(quality(TOP_pop)$lift), "\n")
+cat("Confidence máximo:", max(quality(TOP_pop)$confidence), "\n")
 ```
 
 **Resultados**
@@ -2189,7 +2189,103 @@ cat("Lift > 1 indica asociación positiva significativa.\n")
 cat("Confidence > 0.6 indica reglas confiables.\n")
 cat("Support indica la frecuencia del patrón en las transacciones.\n")
 ```
+# 0'S en Song_Popularity
 
+**Procedimiento**:
+Procedimiento mixto clasificación + regresión, muy típico cuando la variable respuesta contiene ceros que distorsionan métricas como el MAPE. Pipeline en R:
+  - Separa la base en dos subconjuntos (song_popularity = 0 y song_popularity > 0).
+
+  - Entrena un clasificador para predecir la probabilidad de que una observación tenga popularidad 0.
+
+  - Entrena un modelo de regresión solo con los casos con popularidad > 0.
+
+  - En el test, combina ambos modelos: Si la probabilidad de ser 0 es alta --> predicción = 0
+                                       Si no --> predicción = predicción del modelo de regresión
+
+
+
+A partir de la base de datos **datos_final**
+
+```{r}
+# Cargar datos
+datos <- datos_prepro  # sustituye si tu objeto tiene otro nombre
+
+# Crear variable binaria para el modelo de clasificación
+datos$is_zero <- ifelse(datos$song_popularity == 0, 1, 0)
+
+# Separar en train y test (mantener proporciones)
+set.seed(123)
+library(caret)
+
+train_index <- createDataPartition(datos$song_popularity, p = 0.8, list = FALSE)
+
+train <- datos[train_index, ]
+test  <- datos[-train_index, ]
+
+# Entrenar un modelo clasificador para predecir ceros
+library(randomForest)
+
+modelo_clasif <- randomForest(
+  as.factor(is_zero) ~ . -song_popularity,
+  data = train,
+  ntree = 300
+)
+
+# Obtener probabilidades en test
+test$prob_zero <- predict(modelo_clasif, newdata = test, type = "prob")[,2]
+
+# Entrenar el modelo de regresión solo con casos > 0
+train_reg <- subset(train, song_popularity > 0)
+
+modelo_reg <- randomForest(
+  song_popularity ~ . -is_zero,
+  data = train_reg,
+  ntree = 300
+)
+
+# Predicciones en test
+test$pred_reg <- predict(modelo_reg, newdata = test)
+
+# Combinar ambos modelos (reglas de imputación)
+## umbral, de 0.5
+umbral <- 0.5
+
+test$pred_final <- ifelse(test$prob_zero > umbral,
+                          0,          # si es muy probable que sea 0
+                          test$pred_reg)  # si no, usar el modelo de regresión
+
+# Calcular el MAPE seguro (evita dividir por cero)
+# library(Metrics)
+
+# Evitar división entre cero
+# mape_seguro <- mean(abs(test$song_popularity - test$pred_final) /
+#                    pmax(test$song_popularity, 1))
+
+# mape_seguro
+
+# Guardamos los datasets
+datos0<-datos
+test0<-test
+
+```
+
+
+```{r}
+# Función para calcular RMSE
+rmse <- function(actual, predicted) {
+  sqrt(mean((actual - predicted)^2))
+}
+
+# Función para calcular MAPE
+mape <- function(actual, predicted) {
+  non_zero <- actual != 0  # filtrar valores distintos de 0
+  100 * mean(abs((actual[non_zero] - predicted[non_zero]) / (actual[non_zero])))
+}
+
+
+rmse(test$song_popularity, test$pred_final)
+mape(test$song_popularity,test$pred_final)
+```
 
 # 9. CART 
 ```{r}
@@ -2512,14 +2608,15 @@ library(printr)
 library(randomForest)
 library(ranger)
 ```
+
 ```{r}
 set.seed(1234)
-datos <- datos_prepro
+datos <- datos0
 #datos_no0<- datos[datos$song_popularity != 0, ]
-default_idx <- sample(nrow(datos), nrow(datos) * 0.7)
+#default_idx <- sample(nrow(datos), nrow(datos) * 0.7)
 
-train <- datos[default_idx, ]
-test  <- datos[-default_idx, ]
+train <- train_reg
+test  <- test0
 ```
 
 
@@ -2586,11 +2683,14 @@ sort(importancia_pred,decreasing=TRUE)
 ```
 KPI's
 ```{r}
-predicciones<-predicciones$predictions
-caret::postResample(round(predicciones,0), test$song_popularity)
+test$pred_reg<-predicciones$predictions
+test$RF <- ifelse(test$prob_zero > umbral,
+                          0,          
+                          test$pred_reg) 
+caret::postResample(test$RF, test$song_popularity)
 ```
 ```{r}
-error<-abs(round(predicciones,0)-test$song_popularity)
+error<-abs(test$RF-test$song_popularity)
 error<-error/test$song_popularity
 average<-mean(error)*100
 acc<-100-average
@@ -2616,7 +2716,7 @@ accuracy <- function(pred, obs, na.rm = FALSE,
     r.squared = 1 - sum(err^2)/sum((obs - mean(obs))^2)
   ))
 }
-accuracy(round(predicciones,0), test$song_popularity)
+accuracy(test$RF, test$song_popularity)
 ```
 
 ## 10.2. Boosting
@@ -2982,6 +3082,7 @@ if(length(componentes_importantes_test) > 0) {
 test_final$outlier<-outlier_test
 ```
 
+
 ## 12.5. Modelos 
 
 ### 10.5.1. KNN
@@ -3058,6 +3159,45 @@ write.table(submission4,
 )
 ```
 
+## 0's en el output
+```{r}
+set.seed(123)
+library(caret)
+library(dplyr)
+# Crear variable binaria para el modelo de clasificación
+train$is_zero <- ifelse(train$song_popularity == 0, 1, 0)
+
+# Entrenar un modelo clasificador para predecir ceros
+library(randomForest)
+modelo_clasif <- randomForest(
+  as.factor(is_zero) ~ . ,
+  data = dplyr::select(train, -song_popularity),
+  ntree = 300
+)
+
+# Obtener probabilidades en test
+test$prob_zero <- predict(modelo_clasif, newdata = test, type = "prob")[,2]
+
+# Entrenar el modelo de regresión solo con casos > 0
+train_reg <- subset(train, song_popularity > 0)
+train_reg <- dplyr::select(train_reg, -is_zero)
+modelo_reg <- randomForest(
+  song_popularity ~ .,
+  data = train_reg,
+  ntree = 300
+)
+
+# Predicciones en test
+test$pred_reg <- predict(modelo_reg, newdata = test)
+
+# Combinar ambos modelos (reglas de imputación)
+## umbral, de 0.5
+umbral <- 0.5
+
+test$pred_final <- ifelse(test$prob_zero > umbral,
+                          0,          # si es muy probable que sea 0
+                          test$pred_reg)  # si no, usar el modelo de regresión
+```
 ### 12.5.2. CART
 
 ### 12.5.3. RF
@@ -3078,7 +3218,7 @@ for(i in 1:nrow(param_grid)){
   
   modelo <- ranger(
     formula   = song_popularity ~ .,
-    data      = train, 
+    data      = train_reg, 
     num.trees = param_grid$num_trees[i],
     mtry      = param_grid$mtry[i],
     max.depth = param_grid$max_depth[i],
@@ -3106,7 +3246,7 @@ Bosque óptimo
 set.seed(123)
 modelo  <- ranger(
   formula   = song_popularity ~ .,
-  data      = train,
+  data      = train_reg,
   num.trees = 5000,
   mtry=2,
   max.depth = 20,
@@ -3119,15 +3259,23 @@ predicciones
 importancia_pred <- modelo$variable.importance
 sort(importancia_pred,decreasing=TRUE)
 ```
+
+```{r}
+test$pred_reg<-predicciones$predictions
+test$RF <- ifelse(test$prob_zero > umbral,
+                          0,          
+                          test$pred_reg) 
+```
+
 Submission rf 
 ```{r}
-yp_rf<-round(predicciones$predictions,0)
+yp_rf<-test$RF
 # Crear dataframe de submission
-submission5 <- data.frame(ID = test_num$ID, "song_popularity" = yp_rf)
+submission7 <- data.frame(ID = test_num$ID, "song_popularity" = yp_rf)
 
 # Exportar a CSV (sin comillas ni índice)
-write.table(submission5, 
-            file = "submission5.csv", 
+write.table(submission7, 
+            file = "submission7.csv", 
             sep = ",",              # separador por comas
             row.names = FALSE, 
             col.names = TRUE, 
