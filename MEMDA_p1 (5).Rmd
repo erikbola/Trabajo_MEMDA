@@ -2088,7 +2088,7 @@ if (reglas_encontradas) {
 
 ```{r}
 reglas <- apriori(
-  trans,
+  datos_transacciones,
   parameter = list(
     support = 0.03,
     confidence = 0.5,
@@ -2106,7 +2106,7 @@ inspect(head(sort(reglas, by = "lift"), 10))
 cat("=== 8.5 ANÁLISIS DE POPULARIDAD ===\n")
 
 # Detectar automáticamente el ítem asociado a la popularidad "alta"
-labels_trans <- itemLabels(trans)
+labels_trans <- itemLabels(datos_transacciones)
 
 # Buscamos cualquier etiqueta que incluya el nombre de la variable de popularidad
 pop_items <- grep("pop", labels_trans, ignore.case = TRUE, value = TRUE)
@@ -2126,7 +2126,7 @@ cat("\nItem objetivo para popularidad:", patron_popularidad, "\n\n")
 
 # Generación de reglas que predicen popularidad
 reglas_popularidad <- apriori(
-  trans,
+  datos_transacciones,
   parameter = list(
     support = 0.02,      # 2% → suficientemente flexible
     confidence = 0.5,    # confianza media-alta
@@ -2615,7 +2615,8 @@ datos <- datos0
 #datos_no0<- datos[datos$song_popularity != 0, ]
 #default_idx <- sample(nrow(datos), nrow(datos) * 0.7)
 
-train <- train_reg
+train <- subset(train_reg, outlier == 0)
+train <- subset(train, select=-c(outlier,is_zero))
 test  <- test0
 ```
 
@@ -2722,16 +2723,21 @@ accuracy(test$RF, test$song_popularity)
 ## 10.2. Boosting
 
 ### 10.2.1. GBM
+
 ```{r}
 library(gbm)
 set.seed(1234)
-datos <- datos_prepro
+datos <- datos0
 #datos_no0<- datos[datos$song_popularity != 0, ]
-default_idx <- sample(nrow(datos), nrow(datos) * 0.7)
+#default_idx <- sample(nrow(datos), nrow(datos) * 0.7)
 
-train <- datos[default_idx, ]
-test  <- datos[-default_idx, ]
+train <- subset(train_reg, outlier == 0)
+train <- subset(train, select=-c(outlier,is_zero))
+train$key1 <- ifelse(datos$key == 1, 1, 0)
+train$key3 <- ifelse(datos$key == 3, 1, 0)
+test  <- test0
 ```
+
 Modelo
 ```{r}
 gbm.fit<-gbm(song_popularity~.,data=train)
