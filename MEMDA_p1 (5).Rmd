@@ -28,7 +28,7 @@ options(xts.warn_dplyr_breaks_lag = FALSE)
 
 ```{r}
 datos <- read_csv("train.csv")
-test <- read_csv("test.csv")
+TEST<- read_csv("test.csv")
 ```
 
 # 1. Descripción del problema
@@ -1147,7 +1147,7 @@ plot(density(outliers_scores_lof))
 ```
 Trataremos como outliers segun lof aquellos que esten fuera del precentil 95% segun los scores.
 ```{r}
-umbral_lof<-quantile(outliers_scores_lof,0.95)
+umbral_lof<-quantile(outliers_scores_lof,0.975)
 lof<-as.integer(outliers_scores_lof>umbral_lof)
 table(lof)
 ```
@@ -1160,24 +1160,24 @@ distancia_mahalanobis<-mahalanobis(datos_maha,colMeans(datos_maha),cov(datos_mah
 plot(density(distancia_mahalanobis))
 ```
 ```{r}
-umbral_maha<-qchisq(p=0.99, df=ncol(datos_maha))
+umbral_maha<-qchisq(p=0.999, df=ncol(datos_maha))
 mahalanobis<-as.integer(distancia_mahalanobis>umbral_maha)
 table(mahalanobis)
-528/13186
+261/13186
 ```
 Tenemos que hacer uso del mahalanobis robusto ya que en nuestra bbdd no podemos aproximar la ditribución de las distancias a una chiquadrado debido a que no todas las variables són normales. Para el vector de mahalanobis cogeremos aquellas observaciones fuera del quantil del 99% como outliers.
 ```{r}
-umbral_maha<-quantile(distancia_mahalanobis, 0.99)
+umbral_maha<-quantile(distancia_mahalanobis, 0.999)
 mahalanobis<-as.integer(distancia_mahalanobis>umbral_maha)
 table(mahalanobis)
 ```
 ### 5.1.3. Mahalanobis Robusto
 ```{r}
 library(chemometrics)
-dis<-chemometrics::Moutlier(datos_maha, quantile=0.99, plot=TRUE)
+dis<-chemometrics::Moutlier(datos_maha, quantile=0.999, plot=TRUE)
 ```
 ```{r}
-umbral_mcd<-quantile(dis$rd,0.99)
+umbral_mcd<-quantile(dis$rd,0.999)
 mcd<-as.integer(dis$rd>umbral_mcd)
 table(mcd)
 ```
@@ -1199,7 +1199,7 @@ pred_iso<-isoforest$predict(data=datos_iso)
 head(pred_iso)
 ```
 ```{r}
-umbral_iso <- quantile(pred_iso$anomaly_score, 0.95)
+umbral_iso <- quantile(pred_iso$anomaly_score, 0.975)
 iso<-as.integer(pred_iso$anomaly_score>umbral_iso)
 table(iso)
 ```
@@ -1257,7 +1257,12 @@ datos$outlier<-outlier
 ```{r}
 summary(datos)
 ```
+Guardamos esta base de datos en un dataset backup
+```{r}
+datos_backup<-datos
+```
 
+Posteriormente, las observaciones que hayan sido detectadas como valores atípicos después de haber realizado el ensamble de metodos serán eliminadas de la bbdd definitiva, eliminando así el posible sesgo que estas puedan añadir en las predicciones de los modelos futuros.
 
 # 6. Feature engineering
 
@@ -1525,7 +1530,7 @@ resultados_evaluacion <- data.frame()
 for(var in variables_a_transformar) {
   # Obtener todas las versiones de la variable
   vars_relacionadas <- datos_transformados %>% 
-    select(starts_with(var))
+    dplyr::select(dplyr::starts_with(var))
   
   eval_var <- evaluar_transformaciones(
     datos_transformar[[var]], 
@@ -1678,27 +1683,178 @@ Por lo tanto, las 5 variables seleccionadas son: $\text{speechiness, liveness_bo
 datos_final$outlier<-datos$outlier
 ```
 
+### 6.3.5. Variables dummies
+
+Estudiamos las distribuciones del output segun las variables categoricas para estudiar la inclusión de una de ellas y si está será a traves de la dumificación.
+```{r}
+boxplot(song_popularity~audio_mode,data=datos)
+boxplot(song_popularity~key,data=datos)
+boxplot(song_popularity~time_signature,data=datos)
+```
+
+Con audio_mode vemos que la distribución en ambas categorias (0 y 1) és idéntica, lo que nos induce a rechazar su inclusión en el conjunto de variables seleccionadas.
+
+En key, cada una de los 12 boxplots siguen un mismo patrón exceptuando el asociado a una respuesta de 1 y 3 en dicha variable. Lo que nos hace decidir incluir una variable dummies para recoger este efecto en nuestros modelos.
+
+Por último, en el caso de time_signature, observamos 4 distribuciones semejantes en valores del 1 al 5 y un claro peso superior en valores inferiores a la media general cuando esta variable es igual a 0. Con esta información, decidimos incluir una dummies que discretice cuando una observación sea 0 en dicha variable y cuando no.
+
+```{r}
+datos_final$key1 <- ifelse(datos$key == 1, 1, 0)
+datos_final$key3<-ifelse(datos$key == 3, 1, 0)
+datos_final$time_signature0 <- ifelse(datos$time_signature == 0, 1, 0)
+```
+
+Nota: Posteriormente, en el entrenamiento y evaluación de los modelos, hemos observado como en todos ellos tanto key1 como time_signature0 carecian de efecto sobre el output. Obteniamos una importancia igual a 0 en algunas pruebas. Esto nos ha llevado a excluirlas del conjunto de variables.
+
+Por lo tanto con lo dicho anteriormente creamos la bbdd con el conjunto de variables seleccionado.
+```{r}
+datos<-datos_final[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","outlier","key3")]
+datos$song_popularity<-datos_backup$song_popularity
+```
+
+Además, ahora que hemos obtenido la bbdd con la selección definitiva de variables, procedemos a extraer de esta aquellas observaciones consideradas outliers. Antes de esto, guardamos una bbdd sin outliers que nos servirá para hacer pruebas de modelos en los que se incluyan y en los que no.
+```{r}
+datos_full <- datos
+datos <- subset(datos, outlier == 0)
+datos <- subset(datos, select=-outlier)
+```
+
+### 6.3.6. Tratamiento de 0's en el output
+
+**Procedimiento**:
+Procedimiento mixto clasificación + regresión, muy típico cuando la variable respuesta contiene ceros que distorsionan métricas como el MAPE. Pipeline en R:
+  - Separa la base en dos subconjuntos (song_popularity = 0 y song_popularity > 0).
+
+  - Entrena un clasificador para predecir la probabilidad de que una observación tenga popularidad 0.
+
+  - Entrena un modelo de regresión solo con los casos con popularidad > 0.
+
+  - En el test, combina ambos modelos: Si la probabilidad de ser 0 es alta --> predicción = 0
+                                       Si no --> predicción = predicción del modelo de regresión
+
+A partir de la base de datos **datos** aprovecharemos para crear los subconjuntos train y test que nos serviran para entrenar y evaluar los modelos realizados posteriormente.
+
+```{r}
+# Crear variable binaria para el modelo de clasificación
+datos$is_zero <- ifelse(datos$song_popularity == 0, 1, 0)
+
+# Separar en train y test (mantener proporciones)
+set.seed(123)
+library(caret)
+
+train_index <- createDataPartition(datos$song_popularity, p = 0.7, list = FALSE)
+
+train <- datos[train_index, ]
+test  <- datos[-train_index, ]
+
+# Entrenar un modelo clasificador para predecir ceros
+library(randomForest)
+
+modelo_clasif <- randomForest(
+  as.factor(is_zero) ~ . -song_popularity,
+  data = train,
+  ntree = 300
+)
+
+# Obtener probabilidades en test
+test$prob_zero <- predict(modelo_clasif, newdata = test, type = "prob")[,2]
+
+# Entrenar el modelo de regresión solo con casos > 0
+train_reg <- subset(train, song_popularity > 0)
+
+modelo_reg <- randomForest(
+  song_popularity ~ . -is_zero,
+  data = train_reg,
+  ntree = 300
+)
+
+# Predicciones en test
+test$pred_reg <- predict(modelo_reg, newdata = test)
+
+# Combinar ambos modelos (reglas de imputación)
+## umbral, de 0.5
+umbral <- 0.5
+
+test$pred_final <- ifelse(test$prob_zero > umbral,
+                          0,          # si es muy probable que sea 0
+                          test$pred_reg)  # si no, usar el modelo de regresión
+
+# Guardamos el datasets definitivos.
+train<-train[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","key3","song_popularity")]
+test<-test[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","key3","prob_zero","song_popularity")]
+datos<-subset(datos, select=-is_zero)
+```
+
+Creamos lo mismo para la bbdd **datos_full** con outliers
+```{r}
+# Crear variable binaria para el modelo de clasificación
+datos_full$is_zero <- ifelse(datos_full$song_popularity == 0, 1, 0)
+
+# Separar en train y test (mantener proporciones)
+set.seed(123)
+library(caret)
+
+train_index_full <- createDataPartition(datos_full$song_popularity, p = 0.7, list = FALSE)
+
+train_full <- datos_full[train_index_full, ]
+test_full  <- datos_full[-train_index_full, ]
+
+# Entrenar un modelo clasificador para predecir ceros
+library(randomForest)
+
+modelo_clasif_full <- randomForest(
+  as.factor(is_zero) ~ . -song_popularity,
+  data = train_full,
+  ntree = 300
+)
+
+# Obtener probabilidades en test
+test_full$prob_zero <- predict(modelo_clasif_full, newdata = test_full, type = "prob")[,2]
+
+# Entrenar el modelo de regresión solo con casos > 0
+train_reg_full <- subset(train_full, song_popularity > 0)
+
+modelo_reg_full <- randomForest(
+  song_popularity ~ . -is_zero,
+  data = train_reg_full,
+  ntree = 300
+)
+
+# Predicciones en test
+test_full$pred_reg <- predict(modelo_reg_full, newdata = test_full)
+
+# Combinar ambos modelos (reglas de imputación)
+## umbral, de 0.5
+umbral <- 0.5
+
+test_full$pred_final <- ifelse(test_full$prob_zero > umbral,
+                          0,          # si es muy probable que sea 0
+                          test_full$pred_reg)  # si no, usar el modelo de regresión
+
+# Guardamos el datasets definitivos.
+train_full<-train_full[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","key3","song_popularity")]
+test_full<-test_full[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","key3","prob_zero","song_popularity")]
+datos_full<-subset(datos_full, select=-is_zero)
+```
+
+### 6.3.7. Dataset final
+
+La bbdd llamada datos que será la base de datos preprocesada y con la que se trabajará en el modelado posterior. Dicha bbdd será utilizada como conjunto train en la obtención del vector de predicciones a partir del conjunto test para las submissions.
+
+Esta bbdd contará con el siguiente conjunto de variables, resultado del trabajo realizado en este apartado: speechiness,liveness_boxcox, acousticness_boxcox, danceability, audio_valence, key1, key3 y time_signature0. Una última variable llamada prob_zero, presente solamente en el subconjunto test, no será incluida en los modelos, ya que está servirá únicamente para obtener los vectores de predicciones definitivos pasando por el resultado del modelo clasificatorio de 0's en el output.
+
+Por otro lado, han sido aquellas instancias que hayan sido detectadas como outliers en el ensamble de metodos en su respectivo apartado, logrando así eliminar el posible sesgo que estos puedisen añadir al resultado de nuestros modelos.
+
+```{r}
+save(datos, train, test, datos_full, train_full, test_full, file = "Datos_Prepocesados.RData")
+#load("Datos_Prepocesados.RData")
+```
+
 # 7. KNN
 
 Base de datos con las variables seleccionadas y sus transformaciones:
-
-1) Modelo con las variables seleccionadas
 ```{r}
-datos_prepro<-datos_final[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","outlier")]
-datos_prepro$song_popularity<-datos_num$song_popularity
-# View(datos_prepro)
-```
-
-```{r}
-matriz_corr <- cor(datos_prepro)
-corrplot(matriz_corr, method = "circle")
-```
-
-
-2) Modelo con las 5 componentes
-```{r}
-datos_prepro_comp<-datos_final[,c("Componente_1", "Componente_2", "Componente_3", "Componente_4", "Componente_5" )]
-datos_prepro_comp$song_popularity<-datos_num$song_popularity
+str(datos)
 ```
 
 ## 7.1 Elección del valor óptimo de k
@@ -1715,28 +1871,11 @@ Para discutir cuál es el valor óptimo de k, se toman por referencia los cálcu
 
 El **Error Percentual Absoluto Medio** (**MAPE**: *Mean Absolute Percentual Error*) mide el error porcentual medio entre los valores reales  ($A_t$) y los valores pronosticados ($F_t$). Una ventaja que tiene esta medida frente a la **Raíz del Error Cuadrático Medio**, es que, al ser porcentual, es adimensional y, por tanto, no depende de las unidades. De esta manera facilita su interpretación. 
 
-Se usan distintos valores impares para *k* y se calcula el **RMSE** y el **MAPE** en cada uno de ellos para escoger aquél que proporciona un error mínimo.
+Se usan distintos valores impares para *k* y se calcula el **RMSE** y el **MAPE** en cada uno de ellos para escoger aquel que proporciona un error mínimo.
 
-1) Modelo con las 5 variables seleccionadas
 ```{r, warning=FALSE}
 library(FNN)
 set.seed(1994)
-
-# División del conjunto
-default_idx <- sample(nrow(datos_prepro), nrow(datos_prepro) * 0.7)
-datos <- datos_prepro
-
-train <- datos[default_idx, ]
-testK  <- datos[-default_idx, ]
-
-X_train <- train[, -6]
-X_test  <- testK[, -6]
-y_train <- train[, 6]
-y_test  <- testK[, 6]
-
-# Convertimos todo a numérico
-X_train <- data.frame(lapply(X_train, as.numeric))
-X_test  <- data.frame(lapply(X_test, as.numeric))
 
 # Función para calcular RMSE
 rmse <- function(actual, predicted) {
@@ -1745,8 +1884,7 @@ rmse <- function(actual, predicted) {
 
 # Función para calcular MAPE
 mape <- function(actual, predicted) {
-  non_zero <- actual != 0  # filtrar valores distintos de 0
-  100 * mean(abs((actual[non_zero] - predicted[non_zero]) / (actual[non_zero])))
+  100 * mean(abs((actual - predicted) / (actual+1)))
 }
 
 # Vector de valores de k a probar
@@ -1762,10 +1900,13 @@ results <- data.frame(
 for (i in seq_along(k_values)) {
   k <- k_values[i]
   
-  pred <- knn.reg(train = X_train, test = X_test, y = y_train, k = k)$pred
+  pred <- knn.reg(train= subset(train,select=-song_popularity), 
+                  test= subset(test,select=-c(song_popularity,prob_zero)),
+                  y = train$song_popularity, 
+                  k = k)$pred
   
-  results$RMSE[i] <- rmse(y_test, pred)
-  results$MAPE[i] <- mape(y_test, pred)
+  results$RMSE[i] <- rmse(test$song_popularity, pred)
+  results$MAPE[i] <- mape(test$song_popularity, pred)
 }
 
 # Mostrar los resultados
@@ -1782,111 +1923,45 @@ best_mape <- min(results$MAPE)
 cat("Mejor k según RMSE:", best_rmse_k, " (RMSE =", best_rmse, ")\n")
 cat("Mejor k según MAPE:", best_mape_k, " (MAPE =", best_mape, ")\n")
 ```
+Dado que el valor de k que minimiza el **RMSE** es 19, y el que minimiza el **MAPE** es 3, se procede a calcular el modelo con k=19 debido a que este és el inidcador guia de nuestra trabajo.
 
-2) Modelo con las 5 componentes
-```{r, warning=FALSE}
-library(FNN)
-set.seed(1994)
-
-# División del conjunto
-datos_comp <- datos_prepro_comp
-
-train_comp <- datos_comp[default_idx, ]
-testK_comp  <- datos_comp[-default_idx, ]
-
-X_train_comp <- train_comp[, -6]
-X_test_comp  <- testK_comp[, -6]
-y_train_comp <- train_comp[, 6]
-y_test_comp  <- testK_comp[, 6]
-
-# Convertimos todo a numérico
-X_train_comp <- data.frame(lapply(X_train_comp, as.numeric))
-X_test_comp  <- data.frame(lapply(X_test_comp, as.numeric))
-
-# Calcular RMSE y MAPE para cada k
-results_comp <- data.frame(
-  k = k_values,
-  RMSE = numeric(length(k_values)),
-  MAPE = numeric(length(k_values))
-)
-
-for (i in seq_along(k_values)) {
-  k <- k_values[i]
-  
-  pred_comp <- knn.reg(train = X_train_comp, test = X_test_comp, y = y_train_comp, k = k)$pred
-  
-  results_comp$RMSE[i] <- rmse(y_test_comp, pred_comp)
-  results_comp$MAPE[i] <- mape(y_test_comp, pred_comp)
-}
-
-# Mostrar los resultados
-print(results_comp)
-
-# Encontrar el k con menor RMSE
-best_rmse_k_comp <- results_comp$k[which.min(results_comp$RMSE)]
-best_rmse_comp <- min(results_comp$RMSE)
-
-# Encontrar el k con menor MAPE
-best_mape_k_comp <- results_comp$k[which.min(results_comp$MAPE)]
-best_mape_comp <- min(results_comp$MAPE)
-
-cat("Mejor k según RMSE:", best_rmse_k_comp, " (RMSE =", best_rmse_comp, ")\n")
-cat("Mejor k según MAPE:", best_mape_k_comp, " (MAPE =", best_mape_comp, ")\n")
-```
-
-Dado que el valor de k que minimiza el **RMSE** es 19, y el que minimiza el **MAPE** es 17, se procede a calcular un criterio combinado para elegir el que minimice ambos errores balanceados:
-
-1) Modelo con las 5 variables seleccionadas
-```{r}
-results$score <- scale(results$RMSE) + scale(results$MAPE)
-best_combined_k <- results$k[which.min(results$score)]
-cat("Mejor k combinado:", best_combined_k, "\n")
-```
-
-Por lo tanto, el valor óptimo de k es **k=19**. 
-
-2) Modelo con las 5 componentes
-```{r}
-results_comp$score <- scale(results_comp$RMSE) + scale(results_comp$MAPE)
-best_combined_k_comp <- results_comp$k[which.min(results_comp$score)]
-cat("Mejor k combinado:", best_combined_k_comp, "\n")
-```
 ## 7.2 Modelo con k óptimo 
 
-1) Modelo con las 5 variables seleccionadas
-
 Se usa **k=19** como valor óptimo para realizar el *KNN*.
 
 ```{r}
-modelo_knn <- knn.reg(train = X_train, test = X_test, y = y_train, k = 17)
+modelo_knn <- knn.reg(train= subset(train,select=-song_popularity), 
+                  test= subset(test,select=-c(song_popularity,prob_zero)),
+                  y = train$song_popularity, 
+                  k = 19)
 yp <- modelo_knn$pred
-y  <- y_test
-
-# --- Cálculo de errores ---
-e1 <- (y - yp)^2
-e2 <- abs(y - yp)
+y  <- test$song_popularity
 
 # --- RMSE final ---
-rmse <- sqrt(mean(e1))
-cat("RMSE del modelo con k =", 17, ":", rmse, "\n")
+#rmse <- sqrt(mean(e1))
+cat("RMSE del modelo con k =", 17, ":", rmse(y,yp), "\n")
 ```
-
-2) Modelo con las 5 componentes
-
-Se usa **k=19** como valor óptimo para realizar el *KNN*.
-
+Creamos una función para evaluar el modelo con distintas metricas de dispersión y precisión de las predicciones. Esta será utilizada en los posteriores modelos para la evaluación de los mismos.
 ```{r}
-modelo_knn_comp <- knn.reg(train = X_train_comp, test = X_test_comp, y = y_train_comp, k = 19)
-yp_comp <- modelo_knn_comp$pred
-y_comp  <- y_test_comp
-
-# --- Cálculo de errores ---
-e1_comp <- (y_comp - yp_comp)^2
-e2_comp <- abs(y_comp - yp_comp)
-
-# --- RMSE final ---
-rmse_comp <- sqrt(mean(e1_comp))
-cat("RMSE del modelo con k =", 19, ":", rmse_comp, "\n")
+accuracy <- function(pred_fin, obs, na.rm = FALSE, 
+                     tol = sqrt(.Machine$double.eps)) {
+  err <- obs - pred_fin     # Errors
+  if(na.rm) {
+    is.a <- !is.na(err)
+    err <- err[is.a]
+    obs <- obs[is.a]
+  }  
+  perr <- 100*err/pmax(obs, tol)  # % errors
+  return(c(
+    me = mean(err),           # Mean error
+    rmse = sqrt(mean(err^2)), # sqrt mean squared error
+    mae = mean(((obs)-(pred_fin))/(obs+1)),# mean absolute error
+    mpe= 100*mean(((obs)-(pred_fin))/(obs+1)),#mean percentage error
+    mape = 100*mean(abs(((obs)-(pred_fin))/(obs+1))),   # mean absolute percentage error
+    r.squared = 1 - sum(err^2)/sum((obs - mean(obs))^2)
+  ))
+}
+(kpi_knn<-accuracy(yp, y))
 ```
 
 # 8. Association Rules
@@ -1909,10 +1984,10 @@ options(digits = 3)
 
 ```{r}
 # Visión general de la base de datos preprocesada
-names(datos_prepro) ## 5 predictoras
-head(datos_prepro)
-summary(datos_prepro)
-str(datos_prepro)
+names(datos) ## 6 predictoras
+head(datos)
+summary(datos)
+str(datos)
 ```
 ## 8.1 Preparación y exploración de datos
 
@@ -1923,7 +1998,7 @@ library(arules)
 library(arulesViz)
 library(dplyr)
 
-datos_disc <- datos_prepro
+datos_disc <- subset(datos, select=-c(song_popularity,key3))
 
 for (col in names(datos_disc)) {
   
@@ -2189,104 +2264,6 @@ cat("Lift > 1 indica asociación positiva significativa.\n")
 cat("Confidence > 0.6 indica reglas confiables.\n")
 cat("Support indica la frecuencia del patrón en las transacciones.\n")
 ```
-# 0'S en Song_Popularity
-
-**Procedimiento**:
-Procedimiento mixto clasificación + regresión, muy típico cuando la variable respuesta contiene ceros que distorsionan métricas como el MAPE. Pipeline en R:
-  - Separa la base en dos subconjuntos (song_popularity = 0 y song_popularity > 0).
-
-  - Entrena un clasificador para predecir la probabilidad de que una observación tenga popularidad 0.
-
-  - Entrena un modelo de regresión solo con los casos con popularidad > 0.
-
-  - En el test, combina ambos modelos: Si la probabilidad de ser 0 es alta --> predicción = 0
-                                       Si no --> predicción = predicción del modelo de regresión
-
-
-
-A partir de la base de datos **datos_final**
-
-```{r}
-# Cargar datos
-datos <- datos_prepro  # sustituye si tu objeto tiene otro nombre
-
-# Crear variable binaria para el modelo de clasificación
-datos$is_zero <- ifelse(datos$song_popularity == 0, 1, 0)
-
-# Separar en train y test (mantener proporciones)
-set.seed(123)
-library(caret)
-
-train_index <- createDataPartition(datos$song_popularity, p = 0.8, list = FALSE)
-
-train <- datos[train_index, ]
-test  <- datos[-train_index, ]
-
-# Entrenar un modelo clasificador para predecir ceros
-library(randomForest)
-
-modelo_clasif <- randomForest(
-  as.factor(is_zero) ~ . -song_popularity,
-  data = train,
-  ntree = 300
-)
-
-# Obtener probabilidades en test
-test$prob_zero <- predict(modelo_clasif, newdata = test, type = "prob")[,2]
-
-# Entrenar el modelo de regresión solo con casos > 0
-train_reg <- subset(train, song_popularity > 0)
-
-modelo_reg <- randomForest(
-  song_popularity ~ . -is_zero,
-  data = train_reg,
-  ntree = 300
-)
-
-# Predicciones en test
-test$pred_reg <- predict(modelo_reg, newdata = test)
-
-# Combinar ambos modelos (reglas de imputación)
-## umbral, de 0.5
-umbral <- 0.5
-
-test$pred_final <- ifelse(test$prob_zero > umbral,
-                          0,          # si es muy probable que sea 0
-                          test$pred_reg)  # si no, usar el modelo de regresión
-
-# Calcular el MAPE seguro (evita dividir por cero)
-# library(Metrics)
-
-# Evitar división entre cero
-# mape_seguro <- mean(abs(test$song_popularity - test$pred_final) /
-#                    pmax(test$song_popularity, 1))
-
-# mape_seguro
-
-# Guardamos los datasets
-datos0<-datos
-test0<-test
-
-```
-
-
-```{r}
-# Función para calcular RMSE
-rmse <- function(actual, predicted) {
-  sqrt(mean((actual - predicted)^2))
-}
-
-# Función para calcular MAPE
-mape <- function(actual, predicted) {
-  non_zero <- actual != 0  # filtrar valores distintos de 0
-  100 * mean(abs((actual[non_zero] - predicted[non_zero]) / (actual[non_zero])))
-}
-
-
-rmse(test$song_popularity, test$pred_final)
-mape(test$song_popularity,test$pred_final)
-```
-
 # 9. CART 
 ```{r}
 library(MASS)
@@ -2300,13 +2277,10 @@ library(tree)
 ## 9.1. Arbol inicial
 ```{r}
 set.seed(123)
-train       <- sample(1:nrow(datos_prepro), size = nrow(datos_prepro)/2)
-datos_train <- datos_prepro[train, ]
-datos_test  <- datos_prepro[-train, ]
 
 # Control del árbol: hojas grandes para que no haya mucha profundidad
 control <- tree::tree.control(
-  nobs    = nrow(datos_train),
+  nobs    = nrow(train),
   mincut  = 250,   # mínimo obs en cada rama antes de cortar
   minsize = 500,   # mínimo obs en cada hoja
   mindev  = 0      # permitimos todos los splits posibles dado el tamaño
@@ -2314,7 +2288,7 @@ control <- tree::tree.control(
 
 arbol_regresion <- tree::tree(
   song_popularity ~ .,
-  data    = datos_train,
+  data    = train,
   split   = "deviance",
   control = control
 )
@@ -2329,8 +2303,8 @@ sizes <- c(2, 4, 6, 8, 10, 12, 15, 18)
 
 rmse_por_size <- sapply(sizes, function(s) {
   arbol_podado_1 <- prune.tree(arbol_regresion, best = s)
-  pred <- predict(arbol_podado_1, newdata = datos_test)
-  sqrt(mean((pred - datos_test$song_popularity)^2))
+  pred <- predict(arbol_podado_1, newdata = test)
+  sqrt(mean((pred - test$song_popularity)^2))
 })
 
 data.frame(size = sizes, RMSE = rmse_por_size)
@@ -2345,12 +2319,12 @@ size_optimo
 arbol_final_1 <- prune.tree(arbol_regresion, best = size_optimo)
 
 # RMSE del árbol grande
-pred_ini <- predict(arbol_regresion, newdata = datos_test)
-rmse_ini <- sqrt(mean((pred_ini - datos_test$song_popularity)^2))
+pred_ini <- predict(arbol_regresion, newdata = test)
+rmse_ini <- sqrt(mean((pred_ini - test$song_popularity)^2))
 
 # RMSE del árbol podado
-pred_fin <- predict(arbol_final_1, newdata = datos_test)
-rmse_fin <- sqrt(mean((pred_fin - datos_test$song_popularity)^2))
+pred_fin <- predict(arbol_final_1, newdata = test)
+rmse_fin <- sqrt(mean((pred_fin - test$song_popularity)^2))
 
 rmse_ini
 rmse_fin
@@ -2358,36 +2332,7 @@ rmse_fin
 ```
 ### 9.3.1. Evaluación
 ```{r}
-caret::postResample(pred_fin, datos_test$song_popularity)
-##Another KPI to evaluate Accuracy in Regression --> MAPE
-error<-abs(pred_fin-datos_test$song_popularity)
-error<-error/datos_test$song_popularity
-average<-mean(error)*100
-acc<-100-average
-acc
-```
-
-```{r}
-### Complete Function for Accuracy KPIs
-accuracy <- function(pred_fin, obs, na.rm = FALSE, 
-                     tol = sqrt(.Machine$double.eps)) {
-  err <- obs - pred_fin     # Errors
-  if(na.rm) {
-    is.a <- !is.na(err)
-    err <- err[is.a]
-    obs <- obs[is.a]
-  }  
-  perr <- 100*err/pmax(obs, tol)  # % errors
-  return(c(
-    me = mean(err),           # Mean error
-    rmse = sqrt(mean(err^2)), # sqrt mean squared error
-    mae = mean(abs(err)),     # mean absolute error
-    mpe = mean(perr),         # mean percentage error
-    mape = mean(abs(perr)),   # mean absolute percentage error
-    r.squared = 1 - sum(err^2)/sum((obs - mean(obs))^2)
-  ))
-}
-accuracy(pred_fin, datos_test$song_popularity)
+accuracy(pred_fin, test$song_popularity)
 ```
 ```{r}
 # Árbol grande
@@ -2424,17 +2369,6 @@ library(rpart)
 library(rpart.plot)
 library(caret)
 library(tree)
-
-### Tus datos
-# Suponemos que ya tienes creado 'datos_prepro'
-str(datos_prepro)
-mydata <- datos_prepro
-
-###### Train & Test Partitions
-set.seed(1234)
-ind   <- sample(1:nrow(mydata), 0.7*nrow(mydata))
-train <- mydata[ind, ]
-test  <- mydata[-ind, ]
 
 #############################################
 ### 1) Árbol de REGRESIÓN con rpart (básico)
@@ -2492,47 +2426,16 @@ pred_test  <- predict(tree_opt, newdata = test)
 
 # Métricas con caret
 cat("Métricas TRAIN:\n")
-caret::postResample(pred_train, train$song_popularity)
+accuracy(pred_train, train$song_popularity)
 
 cat("Métricas TEST:\n")
-caret::postResample(pred_test,  test$song_popularity)
-
-#############################################
-### 5) MAPE (con cuidado con ceros)
-#############################################
-
-y_test <- test$song_popularity
-
-error_rel <- abs(pred_test - y_test) / ifelse(y_test == 0, NA, y_test)
-mape <- mean(error_rel, na.rm = TRUE) * 100   # en %
-acc  <- 100 - mape
-
-mape
-acc
-
+accuracy(pred_test,  test$song_popularity)
 ```
 ```{r}
 library(rpart)
 library(rpart.plot)
 library(caret)
 library(dplyr)
-
-datos <- datos_prepro %>%
-  dplyr::select(
-    song_popularity,
-    liveness_boxcox,
-    acousticness_boxcox,
-    danceability,
-    audio_valence,
-    outlier
-  )
-
-
-set.seed(123)
-
-train_idx <- sample(1:nrow(datos), 0.7 * nrow(datos))
-train <- datos[train_idx, ]
-test  <- datos[-train_idx, ]
 
 ctrl <- trainControl(
   method = "cv",
@@ -2554,34 +2457,18 @@ modelo_rpart$finalModel
 # Predicciones
 pred_train <- predict(modelo_rpart, newdata = train)
 pred_test  <- predict(modelo_rpart, newdata = test)
+pred_test<- ifelse(test$prob_zero > umbral,
+                          0,          
+                          pred_test)
 
 # Métricas
-caret::postResample(pred_train, train$song_popularity)
-caret::postResample(pred_test,  test$song_popularity)
+accuracy(pred_train, train$song_popularity)
+(kpi_cart<-accuracy(pred_test,  test$song_popularity))
 
 # Importancia de variables
 var.imp <- varImp(modelo_rpart)
 var.imp
 plot(var.imp, main = "Importancia de variables (árbol rpart)")
-
-mape_safe <- function(pred, obs) {
-  rel_err <- abs(pred - obs) / ifelse(obs == 0, NA, obs)
-  mean(rel_err, na.rm = TRUE) * 100
-}
-
-accuracy_reg <- function(pred, obs) {
-  err  <- obs - pred
-  mse  <- mean(err^2)
-  rmse <- sqrt(mse)
-  mae  <- mean(abs(err))
-  r2   <- 1 - sum(err^2) / sum((obs - mean(obs))^2)
-  mape <- mape_safe(pred, obs)
-  c(RMSE = rmse, MAE = mae, R2 = r2, MAPE = mape)
-}
-
-accuracy_reg(pred_test, test$song_popularity)
-
-
 ```
 
 
@@ -2609,20 +2496,8 @@ library(randomForest)
 library(ranger)
 ```
 
-```{r}
-set.seed(1234)
-datos <- datos0
-#datos_no0<- datos[datos$song_popularity != 0, ]
-#default_idx <- sample(nrow(datos), nrow(datos) * 0.7)
-
-train <- subset(train_reg, outlier == 0)
-train <- subset(train, select=-c(outlier,is_zero))
-test  <- test0
-```
-
-
-
 ### 10.1.1. Optimización de parámetros
+
 Creación de la grid search
 ```{r}
 library(ranger)
@@ -2665,6 +2540,8 @@ p<-which(resultados[,4]==min(resultados[,4]))
 resultados[p,]
 ```
 ### 10.1.2. Bosque óptimo
+
+#### 10.1.2.1. RF sin outliers
 ```{r}
 set.seed(123)
 modelo  <- ranger(
@@ -2684,62 +2561,49 @@ sort(importancia_pred,decreasing=TRUE)
 ```
 KPI's
 ```{r}
-test$pred_reg<-predicciones$predictions
-test$RF <- ifelse(test$prob_zero > umbral,
+pred_reg<-predicciones$predictions
+pred_RF <- ifelse(test$prob_zero > umbral,
                           0,          
-                          test$pred_reg) 
-caret::postResample(test$RF, test$song_popularity)
-```
-```{r}
-error<-abs(test$RF-test$song_popularity)
-error<-error/test$song_popularity
-average<-mean(error)*100
-acc<-100-average
-acc
-```
-Función para KPI's
-```{r}
-accuracy <- function(pred, obs, na.rm = FALSE, 
-                     tol = sqrt(.Machine$double.eps)) {
-  err <- obs - pred     # Errors
-  if(na.rm) {
-    is.a <- !is.na(err)
-    err <- err[is.a]
-    obs <- obs[is.a]
-  }  
-  perr <- 100*err/pmax(obs, tol)  # % errors
-  return(c(
-    me = mean(err),           # Mean error
-    rmse = sqrt(mean(err^2)), # sqrt mean squared error
-    mae = mean(abs(err)),     # mean absolute error
-    mpe = mean(perr),         # mean percentage error
-    mape = mean(abs(perr)),   # mean absolute percentage error
-    r.squared = 1 - sum(err^2)/sum((obs - mean(obs))^2)
-  ))
-}
-accuracy(test$RF, test$song_popularity)
+                          pred_reg) 
+(kpi_RF<-accuracy(pred_RF, test$song_popularity))
 ```
 
+#### 10.1.2.2. RF con outliers
+```{r}
+set.seed(123)
+modelo_full  <- ranger(
+  formula   = song_popularity ~ .,
+  data      = train_full,
+  num.trees = 5000,
+  mtry=3,
+  max.depth = 20,
+  importance= "impurity",
+  seed      = 123
+)
+print(modelo_full)
+predicciones_full <- predict(modelo_full,data = test_full)
+predicciones_full
+importancia_pred_full <- modelo_full$variable.importance
+sort(importancia_pred_full,decreasing=TRUE)
+```
+KPI's
+```{r}
+pred_reg_full<-predicciones_full$predictions
+pred_RF_full <- ifelse(test_full$prob_zero > umbral,
+                          0,          
+                          pred_reg_full) 
+(kpi_RF<-accuracy(pred_RF_full, test_full$song_popularity))
+```
+Vemos que el modelo sin eliminar los potenciales outliers presenta un mejor rendimiento que añadiendolos.
+
+Por lo tanto escogemos el modelo con la bbbdd completa.
 ## 10.2. Boosting
 
 ### 10.2.1. GBM
 
+- Modelo con todas las variables
 ```{r}
 library(gbm)
-set.seed(1234)
-datos <- datos0
-#datos_no0<- datos[datos$song_popularity != 0, ]
-#default_idx <- sample(nrow(datos), nrow(datos) * 0.7)
-
-train <- subset(train_reg, outlier == 0)
-train <- subset(train, select=-c(outlier,is_zero))
-train$key1 <- ifelse(datos$key == 1, 1, 0)
-train$key3 <- ifelse(datos$key == 3, 1, 0)
-test  <- test0
-```
-
-Modelo
-```{r}
 gbm.fit<-gbm(song_popularity~.,data=train)
 gbm.fit
 summary(gbm.fit)
@@ -2748,14 +2612,22 @@ Plots
 ```{r}
 p1<-plot(gbm.fit, i="danceability")
 p2<-plot(gbm.fit, i="acousticness_boxcox")
-gridExtra::grid.arrange(p1, p2, ncol = 2)
+p3<-plot(gbm.fit, i="audio_valence")
+p4<-plot(gbm.fit, i="liveness_boxcox")
+p5<-plot(gbm.fit, i="speechiness")
+p6<-plot(gbm.fit, i="key3")
+gridExtra::grid.arrange(p1, p2, p3, ncol = 2)
+gridExtra::grid.arrange(p4, p5, p6, ncol = 2)
 ```
 Predicciones
 ```{r}
-pred_boost<-predict(gbm.fit, newdata=test)
-obs<-test$song_popularity
-accuracy(pred_boost,obs)
+pred_reg<-predict(gbm.fit, newdata=test)
+pred_Boosting <- ifelse(test$prob_zero > umbral,
+                          0,          
+                          pred_reg)
+accuracy(pred_Boosting,test$song_popularity)
 ```
+
 
 ### 10.2.2. Caret
 ```{r}
@@ -2776,7 +2648,10 @@ caret.gbm1
 Predicciones
 ```{r}
 pred_boost_caret <- predict(caret.gbm1, newdata = test)
-accuracy(pred_boost_caret, obs)
+pred_boost_caret <- ifelse(test$prob_zero > umbral,
+                          0,          
+                          pred_boost_caret)
+(kpi_boost<-accuracy(pred_boost_caret, test$song_popularity))
 ```
 ### 10.2.3. Xboost
 ```{r}
@@ -2789,71 +2664,247 @@ caret.xgb$bestTune
 Predicciones
 ```{r}
 pred_xgboost<-predict(caret.xgb, newdata=test)
-accuracy(pred_xgboost, obs)
+pred_xgboost <- ifelse(test$prob_zero > umbral,
+                          0,          
+                          pred_xgboost)
+accuracy(pred_xgboost, test$song_popularity)
 ```
 
 # 11. SVM
-
-
-# 12. Submission
-
-## 12.1. Preliminares
 ```{r}
-test<-read_csv("test.csv")
-test$key <- factor(test$key)
-test$audio_mode <- factor(test$audio_mode) # 0 = menor, 1 = mayor
-test$time_signature <- factor(test$time_signature)
+library(e1071)
+library(ggplot2)
+library(caret)
+library(dplyr)
+```
 
-clases <- sapply(test, class)
+```{r}
+# Guardamos la variable observada para facilitar métricas
+obs <- test$song_popularity
+
+# Entrenamos un SVM básico con parámetros iniciales (kernel radial)
+# El objetivo es predecir song_popularity (regresión)
+svm.model <- svm(song_popularity ~ ., 
+                 data = train,
+                 cost = 10,
+                 kernel = "radial",
+                 gamma = 0.1)
+
+# Mostramos el resumen del modelo inicial
+#print(svm.model)
+summary(svm.model)
+```
+
+Realizamos las predicciones sobre el conjunto de test
+```{r}
+pred_svm <- predict(svm.model, newdata = test)
+
+# Calculamos los KPIs usando la función accuracy definida previamente
+accuracy(pred_svm, obs)
+```
+
+Ajustamos un grid de valores de cost y gamma. Esto replica el proceso explicado en clase para encontrar el mejor SVM
+
+```{r}
+#set.seed(1234)
+#svm_cv <- tune("svm",
+#               song_popularity ~ .,
+#               data = train,
+#               kernel = "radial",
+#               ranges = list(
+#                 cost = c(0.01, 0.1, 1, 5, 10, 20, 50),
+#                 gamma = c(0.01, 0.05, 0.1, 0.5, 1, 2)
+#               ))
+#saveRDS(svm_cv, file = "svm_cv.rds")
+svm_cv<- readRDS("svm_cv.rds")
+
+# Resumen del rendimiento en CV
+summary(svm_cv)
+
+# Mejores hiperparámetros encontrados
+svm_cv$best.parameters
+```
+Probamos sin key3. Despues extraemos también liveness_boxcox y, por último speechiness.
+```{r}
+svm_cv_2 <- tune("svm",
+               song_popularity ~ .-key3-liveness_boxcox-speechiness,
+               data = train,
+               kernel = "radial",
+               ranges = list(
+                 cost = 1,
+                 gamma = 0.01
+               ))
+summary(svm_cv_2)
+```
+
+Con esto hemos conseguido que el la confirguración de parámetros óptima es un coste = 1 y una gamma = 0.01. Este codigo no se volverá a ejecutar debido a su gran coste computacional y que ha tardado 2 horas en procesar. Por lo tanto tenemos ya creado el archivo con el resultado del tuneo.
+
+Generamos un gráfico del error en función de C (cost) y gamma que permite interpretar qué combinaciones funcionan mejor.
+
+```{r}
+ggplot(data = svm_cv$performances,
+       aes(x = cost, y = error, color = as.factor(gamma))) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Error de validación vs C y gamma",
+       color = "gamma") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+Extraemos el mejor modelo obtenido por tune()
+```{r}
+modelo_svm_opt <- svm_cv$best.model
+modelo_svm_opt
+```
+
+Predicciones con el mejor modelo obtenido
+```{r}
+pred_svm <- predict(modelo_svm_opt, newdata = test)
+pred_svm <- ifelse(test$prob_zero > umbral,
+                  0,          
+                  pred_svm)
+# Calculamos los KPIs finales
+(kpi_SVM<-accuracy(pred_svm, obs))
+```
+```{r}
+modelo_svm_opt_2 <- svm_cv_2$best.model
+pred_svm_2 <- predict(modelo_svm_opt_2, newdata = test)
+pred_svm_2 <- ifelse(test$prob_zero > umbral,
+                  0,          
+                  pred_svm_2)
+# Calculamos los KPIs finales
+(kpi_SVM<-accuracy(pred_svm_2, obs))
+```
+Nos quedamos con el modelo sin key3, liveness_boxcox y speechiness después de haber hecho la reducción del conjunto de variables paso a paso.
+
+Gráfico de valores observados vs predichos
+```{r}
+plot(obs, pred_svm_opt,
+     main = "Real vs Predicho (SVM óptimo)",
+     xlab = "Observado",
+     ylab = "Predicho")
+```
+
+Gráfico de residuos (errores)
+```{r}
+plot(obs - pred_svm_opt,
+     main = "Errores del modelo SVM",
+     ylab = "Residuals")
+```
+
+# 12. Mejor modelo
+
+Tabla resumen
+```{r}
+resumen_kpi <- data.frame(
+  Modelo = c("KNN", "CART","Random Forest", "XGBoost", "SVM"),
+  MAPE   = c(kpi_knn["mape"], 
+             kpi_cart["mape"], 
+             kpi_RF["mape"], 
+             kpi_boost["mape"], 
+             kpi_SVM["mape"]),
+  RMSE   = c(kpi_knn["rmse"], 
+             kpi_cart["rmse"], 
+             kpi_RF["rmse"], 
+             kpi_boost["rmse"], 
+             kpi_SVM["rmse"])
+)
+
+resumen_kpi
+```
+```{r}
+library(gt)
+tabla_resumen <- resumen_kpi %>% 
+  gt() %>%
+  tab_header(
+    title = "Comparación de Modelos Predictivos",
+    subtitle = "Resumen de métricas MAPE y RMSE"
+  ) %>%
+  fmt_number(
+    columns = c(MAPE, RMSE),
+    decimals = 3
+  ) %>%
+  cols_label(
+    Modelo = "Modelo",
+    MAPE   = "MAPE (%)",
+    RMSE   = "RMSE"
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = cells_column_labels(everything())
+  ) %>%
+  tab_options(
+    table.font.size = 14,
+    data_row.padding = px(6)
+  )
+
+tabla_resumen
+```
+
+De momento el modelo que mejor resultado a dado ha sido el random Forest con un RMSE de 21.341.
+
+# 13. Submission
+
+Para evitar solapamientos de bbdd el conjunto test correspondera al test de entrenamiento y el conjunto TEST corresponderá al utilizado para la predicción de las submissions.
+
+## 13.1. Preliminares
+```{r}
+TEST<-read_csv("test.csv")
+TEST$key <- factor(TEST$key)
+TEST$audio_mode <- factor(TEST$audio_mode) # 0 = menor, 1 = mayor
+TEST$time_signature <- factor(TEST$time_signature)
+
+clases <- sapply(TEST, class)
 
 varNum <- names(clases)[which(clases %in% c("numeric", "integer"))]
 varNum<-varNum[!varNum %in% c("ID")]
 varCat <- names(clases)[which(clases %in% c("character", "factor"))]
 ```
 
-## 12.2. Na's
+## 13.2. Na's
 ```{r, warning=FALSE, include=FALSE}
 library(mice)
-tempData <- mice(test,m=5,maxit=50,meth='pmm',seed=500)
-test<-complete(tempData,1)
+tempData <- mice(TEST,m=5,maxit=50,meth='pmm',seed=500)
+TEST<-complete(tempData,1)
 ```
 
-## 12.3. Outliers
+## 13.3. Outliers
 
 Lof
 ```{r}
 library(Rlof)
-test_scaled<-scale(test[,varNum])
-test_scores_lof<-Rlof::lof(test_scaled[,varNum[c(1,9,2,4,3,7)]], k=5)
-plot(density(test_scores_lof))
+TEST_scaled<-scale(TEST[,varNum])
+TEST_scores_lof<-Rlof::lof(TEST_scaled[,varNum[c(1,9,2,4,3,7)]], k=5)
+plot(density(TEST_scores_lof))
 ```
 ```{r}
-umbral_test_lof<-quantile(test_scores_lof,0.95)
-lof_test<-as.integer(test_scores_lof>umbral_test_lof)
-table(lof_test)
+umbral_TEST_lof<-quantile(TEST_scores_lof,0.95)
+lof_TEST<-as.integer(TEST_scores_lof>umbral_TEST_lof)
+table(lof_TEST)
 ```
 
 Mahalanobis
 ```{r}
-test_maha<-scale(test[,varNum[-10]])
-distancia_test_mahalanobis<-mahalanobis(test_maha,colMeans(test_maha),cov(test_maha))
-plot(density(distancia_test_mahalanobis))
+TEST_maha<-scale(TEST[,varNum[-10]])
+distancia_TEST_mahalanobis<-mahalanobis(TEST_maha,colMeans(TEST_maha),cov(TEST_maha))
+plot(density(distancia_TEST_mahalanobis))
 ```
 ```{r}
-umbral_test_maha<-quantile(distancia_test_mahalanobis, 0.99)
-mahalanobis_test<-as.integer(distancia_test_mahalanobis>umbral_test_maha)
-table(mahalanobis_test)
+umbral_TEST_maha<-quantile(distancia_TEST_mahalanobis, 0.99)
+mahalanobis_TEST<-as.integer(distancia_TEST_mahalanobis>umbral_TEST_maha)
+table(mahalanobis_TEST)
 ```
 
 Mahalanobis Robusto (MCD)
 ```{r}
 library(chemometrics)
-dis_test<-chemometrics::Moutlier(test_maha, quantile=0.99, plot=TRUE)
+dis_TEST<-chemometrics::Moutlier(TEST_maha, quantile=0.99, plot=TRUE)
 ```
 ```{r}
-umbral_test_mcd<-quantile(dis_test$rd,0.99)
-mcd_test<-as.integer(dis_test$rd>umbral_test_mcd)
-table(mcd_test)
+umbral_TEST_mcd<-quantile(dis_TEST$rd,0.99)
+mcd_TEST<-as.integer(dis_TEST$rd>umbral_TEST_mcd)
+table(mcd_TEST)
 ```
 
 Isolation Forest
@@ -2861,29 +2912,29 @@ Isolation Forest
 library(solitude)
 library(tidyverse)
 #datos escalados con solo numericas y excluyendo instrentalness
-test_iso<-scale(test[,varNum[-10]])
-isoforest_test<-isolationForest$new(
-  sample_size = as.integer(nrow(test_iso)/2),
+TEST_iso<-scale(TEST[,varNum[-10]])
+isoforest_TEST<-isolationForest$new(
+  sample_size = as.integer(nrow(TEST_iso)/2),
   num_trees = 500,
   replace = TRUE,
   seed=123
 )
-isoforest_test$fit(dataset=test_iso)
-pred_test_iso<-isoforest_test$predict(data=test_iso)
-head(pred_test_iso)
+isoforest_TEST$fit(dataset=TEST_iso)
+pred_TEST_iso<-isoforest_TEST$predict(data=TEST_iso)
+head(pred_TEST_iso)
 ```
 ```{r}
-umbral_test_iso <- quantile(pred_test_iso$anomaly_score, 0.95)
-iso_test<-as.integer(pred_test_iso$anomaly_score>umbral_test_iso)
-table(iso_test)
+umbral_TEST_iso <- quantile(pred_TEST_iso$anomaly_score, 0.95)
+iso_TEST<-as.integer(pred_TEST_iso$anomaly_score>umbral_TEST_iso)
+table(iso_TEST)
 ```
 
 Ensamble de metodos
 ```{r}
-mat_out_test <- cbind(lof_test, mahalanobis_test, mcd_test, iso_test)
-outlier_test<-as.integer(rowSums(mat_out_test)>=2)
-colSums(cbind(mat_out_test, outlier_test))
-table(outlier_test)
+mat_out_TEST <- cbind(lof_TEST, mahalanobis_TEST, mcd_TEST, iso_TEST)
+outlier_TEST<-as.integer(rowSums(mat_out_TEST)>=2)
+colSums(cbind(mat_out_TEST, outlier_TEST))
+table(outlier_TEST)
 ```
 ```{r}
 library(plotly)
@@ -2892,18 +2943,18 @@ library(plotly)
 vars_plot <- c("liveness", "speechiness", "loudness")
 
 # Usamos los datos escalados SOLO para estas 3 variables
-test_plot <- as.data.frame(scale(test[, vars_plot]))
+TEST_plot <- as.data.frame(scale(TEST[, vars_plot]))
 
 # Añadimos el vector outlier final
-test_plot$outlier <- factor(outlier_test, labels = c("Normal", "Outlier"))
+TEST_plot$outlier <- factor(outlier_TEST, labels = c("Normal", "Outlier"))
 
 # Gráfico 3D
 plot_ly(
-  data = test_plot,
+  data = TEST_plot,
   x = ~liveness,
   y = ~speechiness,
   z = ~loudness,
-  color = ~outlier_test,
+  color = ~outlier_TEST,
   colors = c("Normal" = "black", "Outlier" = "red"),
   type = "scatter3d",
   mode = "markers",
@@ -2919,10 +2970,11 @@ plot_ly(
   )
 ```
 ```{r}
-test$outlier<-outlier_test
+TEST$outlier<-outlier_TEST
+TEST_backup<-TEST
 ```
 
-## 12.4. Ingenieria de variables
+## 13.4. Ingenieria de variables
 
 Analisis
 ```{r transformacion_variables, warning=FALSE}
@@ -2931,16 +2983,16 @@ library(e1071)
 library(recipes)
 library(tidyverse)
 
-numeric_cols <- sapply(test, is.numeric)
-test_num <- test[, numeric_cols]
+numeric_cols <- sapply(TEST, is.numeric)
+TEST_num <- TEST[, numeric_cols]
 # Usar el dataset con las variables seleccionadas del paso anterior
 # Asumimos que tenemos: datos_final con las 7 variables seleccionadas
 
 cat("ANÁLISIS INICIAL DE DISTRIBUCIONES Y SESGO:\n")
 
 # Función para calcular estadísticas de sesgo
-analizar_sesgo <- function(test) {
-  skewness_values <- sapply(test, function(x) {
+analizar_sesgo <- function(TEST) {
+  skewness_values <- sapply(TEST, function(x) {
     if(is.numeric(x)) {
       sesgo <- e1071::skewness(x, na.rm = TRUE)
       tipo_sesgo <- ifelse(abs(sesgo) > 1, "ALTO SESGO",
@@ -2959,8 +3011,8 @@ analizar_sesgo <- function(test) {
 variables_seleccionadas <- c("danceability", "audio_valence", "speechiness", 
                              "liveness", "instrumentalness", "acousticness", "loudness")
 
-test_transformar <- test_num[, variables_seleccionadas]
-resultados_sesgo <- analizar_sesgo(test_transformar)
+TEST_transformar <- TEST_num[, variables_seleccionadas]
+resultados_sesgo <- analizar_sesgo(TEST_transformar)
 print(resultados_sesgo)
 ```
 
@@ -2975,24 +3027,24 @@ cat("VARIABLES A TRANSFORMAR (|sesgo| > 0.5):\n")
 print(variables_a_transformar)
 
 # Aplicar diferentes transformaciones
-test_transformados <- test_transformar
+TEST_transformados <- TEST_transformar
 
 for(var in variables_a_transformar) {
-  if(var %in% colnames(test_transformados)) {
+  if(var %in% colnames(TEST_transformados)) {
     
     # Obtener valores mínimos para ajustar transformaciones
-    min_val <- min(test_transformados[[var]], na.rm = TRUE)
+    min_val <- min(TEST_transformados[[var]], na.rm = TRUE)
     
     # Aplicar transformaciones según el tipo de variable
     if(min_val >= 0) {
       # Para variables con valores positivos
-      test_transformados[[paste0(var, "_log")]] <- log1p(test_transformados[[var]])
-      test_transformados[[paste0(var, "_sqrt")]] <- sqrt(test_transformados[[var]])
+      TEST_transformados[[paste0(var, "_log")]] <- log1p(TEST_transformados[[var]])
+      TEST_transformados[[paste0(var, "_sqrt")]] <- sqrt(TEST_transformados[[var]])
       
       # Transformación Box-Cox (requiere valores estrictamente positivos)
       if(min_val > 0) {
-        bc_transform <- BoxCoxTrans(test_transformados[[var]])
-        test_transformados[[paste0(var, "_boxcox")]] <- predict(bc_transform, test_transformados[[var]])
+        bc_transform <- BoxCoxTrans(TEST_transformados[[var]])
+        TEST_transformados[[paste0(var, "_boxcox")]] <- predict(bc_transform, TEST_transformados[[var]])
       }
     }
     
@@ -3000,7 +3052,7 @@ for(var in variables_a_transformar) {
 }
 
 cat("TRANSFORMACIONES APLICADAS:\n")
-cat("Variables originales:", ncol(test_transformar), "\n")
+cat("Variables originales:", ncol(TEST_transformar), "\n")
 ```
 PCA
 ```{r extraccion_variables, warning=FALSE}
@@ -3021,142 +3073,131 @@ cat("1. PREPARANDO DATOS PARA ANÁLISIS...\n")
 variables_para_analisis <- c("danceability", "speechiness", "liveness_boxcox", "instrumentalness", "acousticness_boxcox", "loudness", "audio_valence")
 
 # Crear dataset solo con estas variables (excluir objetivo)
-test_analisis <- test_transformados[, variables_para_analisis]
+TEST_analisis <- TEST_transformados[, variables_para_analisis]
 
 # Estandarizar (importante para PCA)
-test_estandarizados <- scale(test_analisis)
+TEST_estandarizados <- scale(TEST_analisis)
 
 cat("   • Variables analizadas:", paste(variables_para_analisis, collapse = ", "), "\n")
-cat("   • Dimensiones datos:", dim(test_estandarizados), "\n\n")
+cat("   • Dimensiones datos:", dim(TEST_estandarizados), "\n\n")
 ```
 
 ```{r, warning=FALSE}
 cat("2. EJECUTANDO ANÁLISIS DE COMPONENTES PRINCIPALES...\n")
 
-pca_resultado_test <- prcomp(test_estandarizados, scale. = TRUE)
+pca_resultado_TEST <- prcomp(TEST_estandarizados, scale. = TRUE)
 
 # Resumen simple
 cat("   • PCA completado\n")
-cat("   • Número de componentes:", length(pca_resultado_test$sdev), "\n\n")
+cat("   • Número de componentes:", length(pca_resultado_TEST$sdev), "\n\n")
 ```
 
 ```{r, warning=FALSE}
 cat("3. IDENTIFICANDO COMPONENTES IMPORTANTES...\n")
 
 # Calcular varianza explicada
-varianza_explicada_test <- pca_resultado_test$sdev^2 / sum(pca_resultado_test$sdev^2) * 100
+varianza_explicada_TEST <- pca_resultado_TEST$sdev^2 / sum(pca_resultado_TEST$sdev^2) * 100
 
 # Mostrar varianza por componente
 cat("   Varianza explicada por componente:\n")
-for(i in 1:length(varianza_explicada_test)) {
-  cat("   • PC", i, ": ", round(varianza_explicada_test[i], 1), "%\n", sep = "")
+for(i in 1:length(varianza_explicada_TEST)) {
+  cat("   • PC", i, ": ", round(varianza_explicada_TEST[i], 1), "%\n", sep = "")
 }
 
 # Regla simple: componentes que explican >10% de varianza
-componentes_importantes_test <- which(varianza_explicada_test > 10)
+componentes_importantes_TEST <- which(varianza_explicada_TEST > 10)
 cat("\n   • Componentes que explican >10% varianza: PC", 
-    paste(componentes_importantes_test, collapse = ", PC"), "\n", sep = "")
+    paste(componentes_importantes_TEST, collapse = ", PC"), "\n", sep = "")
 ```
 
 Creacion variables finales
 ```{r, warning=FALSE}
 cat("\n4. CREANDO NUEVAS VARIABLES...\n")
 
-if(length(componentes_importantes_test) > 0) {
+if(length(componentes_importantes_TEST) > 0) {
   # Extraer scores de componentes importantes
-  nuevos_componentes_test <- as.data.frame(pca_resultado_test$x[, componentes_importantes_test])
+  nuevos_componentes_TEST <- as.data.frame(pca_resultado_TEST$x[, componentes_importantes_TEST])
   
   # Dar nombres descriptivos
-  nombres_descriptivos_test <- c()
-  for(i in 1:length(componentes_importantes_test)) {
+  nombres_descriptivos_TEST <- c()
+  for(i in 1:length(componentes_importantes_TEST)) {
     nombre <- paste0("Componente_", i)
-    nombres_descriptivos_test <- c(nombres_descriptivos_test, nombre)
+    nombres_descriptivos_TEST <- c(nombres_descriptivos_TEST, nombre)
   }
-  colnames(nuevos_componentes_test) <- nombres_descriptivos_test
+  colnames(nuevos_componentes_TEST) <- nombres_descriptivos_TEST
   
   # Añadir al dataset original
-  test_final <- cbind(test_transformados, nuevos_componentes_test)
+  TEST_final <- cbind(TEST_transformados, nuevos_componentes_TEST)
   
-  cat("   • Nuevas variables creadas:", paste(nombres_descriptivos_test, collapse = ", "), "\n")
+  cat("   • Nuevas variables creadas:", paste(nombres_descriptivos_TEST, collapse = ", "), "\n")
   
 } else {
-  test_final <- test_transformados
+  TEST_final <- TEST_transformados
   cat("   • No se crearon nuevos componentes (poca varianza explicada)\n\n")
 }
 ```
 ```{r}
-test_final$outlier<-outlier_test
+TEST_final$outlier<-outlier_TEST
 ```
 
-
-## 12.5. Modelos 
-
-### 10.5.1. KNN
-
-1) Modelo con las 4 variables seleccionadas
+Creación de dummies
 ```{r}
-test_prepro<-test_final[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","outlier")]
+TEST_final$key3<-ifelse(TEST$key == 3, 1, 0)
 ```
 
-2) Modelo con las 5 componentes
+Selección final
 ```{r}
-test_prepro_comp<-test_final[,c("Componente_1", "Componente_2", "Componente_3", "Componente_4", "Componente_5" )]
+TEST<-TEST_final[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","key3")]
+TEST$song_popularity<-TEST_backup$song_popularity
 ```
-Modelado
+
+Creación de la prob_zero
+```{r}
+# Crear variable binaria para el modelo de clasificación
+datos$is_zero <- ifelse(datos$song_popularity == 0, 1, 0)
+
+# Entrenar un modelo clasificador para predecir ceros
+library(randomForest)
+
+modelo_clasif <- randomForest(
+  as.factor(is_zero) ~ .,
+  data = subset(datos, select=-song_popularity),
+  ntree = 300
+)
+
+# Obtener probabilidades en test
+TEST$prob_zero <- predict(modelo_clasif, newdata = TEST, type = "prob")[,2]
+
+## umbral, de 0.5
+umbral <- 0.5
+
+# Eliminamos la variable is_zero del conjunto datos (TRAIN)
+datos<-subset(datos, select=-is_zero)
+```
+## 13.5. Modelos 
+
+### 13.5.1. KNN
 
 1) Modelo con las 5 variables seleccionadas
 ```{r, warning=FALSE}
 library(FNN)
-set.seed(1994)
-
-# División del conjunto
-train <- datos_prepro
-test  <- test_prepro
-
-X_train <- train[, -7]
-X_test  <- test
-y_train <- train[, 7]
-
-# Convertimos todo a numérico
-X_train <- data.frame(lapply(X_train, as.numeric))
-X_test  <- data.frame(lapply(X_test, as.numeric))
 ```
 
 ```{r}
-modelo_knn_test <- knn.reg(train = X_train, test = X_test, y = y_train, k = 19)
-yp <- modelo_knn_test$pred
-```
-
-2) Modelo con las 5 componentes
-```{r, warning=FALSE}
-library(FNN)
-set.seed(1994)
-
-# División del conjunto
-train_comp <- datos_prepro_comp
-test_comp  <- test_prepro_comp
-
-X_train_comp <- train_comp[, -6]
-X_test_comp  <- test_comp
-y_train_comp <- train_comp[, 6]
-
-# Convertimos todo a numérico
-X_train_comp <- data.frame(lapply(X_train_comp, as.numeric))
-X_test_comp  <- data.frame(lapply(X_test_comp, as.numeric))
-```
-
-```{r}
-modelo_knn_test_comp <- knn.reg(train = X_train_comp, test = X_test_comp, y = y_train_comp, k = 19)
-yp_comp <- modelo_knn_test_comp$pred
+modelo_knn_TEST <- knn.reg(train = subset(datos, select=-song_popularity),
+                           test = subset(TEST, select=-prob_zero), 
+                           y = datos$song_popularity, 
+                           k = 19)
+yp <- modelo_knn_TEST$pred
 ```
 
 ```{r}
 # Crear dataframe de submission
-submission4 <- data.frame(id = test_num$ID, "song_popularity" = yp)
+submission4 <- data.frame(id = TEST_num$ID, "song_popularity" = yp)
 
 # Exportar a CSV (sin comillas ni índice)
 write.table(submission4, 
-            file = "submission4.csv", 
+            file = "submission1.csv", 
             sep = ",",              # separador por comas
             row.names = FALSE, 
             col.names = TRUE, 
@@ -3165,48 +3206,78 @@ write.table(submission4,
 )
 ```
 
-## 0's en el output
+### 13.5.2. CART
+
 ```{r}
-set.seed(123)
-library(caret)
 library(dplyr)
-# Crear variable binaria para el modelo de clasificación
-train$is_zero <- ifelse(train$song_popularity == 0, 1, 0)
-
-# Entrenar un modelo clasificador para predecir ceros
-library(randomForest)
-modelo_clasif <- randomForest(
-  as.factor(is_zero) ~ . ,
-  data = dplyr::select(train, -song_popularity),
-  ntree = 300
-)
-
-# Obtener probabilidades en test
-test$prob_zero <- predict(modelo_clasif, newdata = test, type = "prob")[,2]
-
-# Entrenar el modelo de regresión solo con casos > 0
-train_reg <- subset(train, song_popularity > 0)
-train_reg <- dplyr::select(train_reg, -is_zero)
-modelo_reg <- randomForest(
-  song_popularity ~ .,
-  data = train_reg,
-  ntree = 300
-)
-
-# Predicciones en test
-test$pred_reg <- predict(modelo_reg, newdata = test)
-
-# Combinar ambos modelos (reglas de imputación)
-## umbral, de 0.5
-umbral <- 0.5
-
-test$pred_final <- ifelse(test$prob_zero > umbral,
-                          0,          # si es muy probable que sea 0
-                          test$pred_reg)  # si no, usar el modelo de regresión
+library(rpart)
+library(rpart.plot)
+library(caret)
+library(tree)
 ```
-### 12.5.2. CART
 
-### 12.5.3. RF
+Arbol básico
+```{r}
+tree_rpart <- rpart(song_popularity ~ ., data = datos, method = "anova")
+summary(tree_rpart)
+
+# Ver el árbol en una ventana nueva
+windows()
+rpart.plot(tree_rpart, main = "Árbol rpart (inicial)")
+```
+Arbol grande más poda con cp
+```{r}
+tree_big <- rpart(
+  song_popularity ~ .,
+  data    = datos,
+  method  = "anova",
+  control = rpart.control(cp = 0)
+)
+
+printcp(tree_big)   # tabla de complejidad
+plotcp(tree_big, main = "Curva de complejidad (cp vs xerror)")
+
+# Elegimos el cp que minimiza el error de CV (xerror)
+xerror <- tree_big$cptable[, "xerror"]
+imin   <- which.min(xerror)
+cp_opt <- tree_big$cptable[imin, "CP"]
+cp_opt
+
+# Podamos el árbol grande con ese cp óptimo
+tree_opt <- prune(tree_big, cp = cp_opt)
+
+rpart.plot(tree_opt, main = "Árbol rpart podado (cp óptimo)")
+```
+
+Importancia de las variables
+```{r}
+importance <- tree_opt$variable.importance   # importancia cruda
+importance <- round(100 * importance / sum(importance), 1)
+importance
+```
+Predicciones
+```{r}
+pred_cart  <- predict(tree_opt, newdata = TEST)
+```
+
+Submission cart
+```{r}
+# Crear dataframe de submission
+submission11 <- data.frame(ID = TEST_num$ID, "song_popularity" = pred_cart)
+
+# Exportar a CSV (sin comillas ni índice)
+write.table(submission11, 
+            file = "submission11.csv", 
+            sep = ",",              # separador por comas
+            row.names = FALSE, 
+            col.names = TRUE, 
+            quote = FALSE, 
+            dec = "."               # punto como separador decimal
+)
+```
+
+
+### 13.5.3. RF
 
 Creación de la grid search
 ```{r}
@@ -3224,7 +3295,7 @@ for(i in 1:nrow(param_grid)){
   
   modelo <- ranger(
     formula   = song_popularity ~ .,
-    data      = train_reg, 
+    data      = datos, 
     num.trees = param_grid$num_trees[i],
     mtry      = param_grid$mtry[i],
     max.depth = param_grid$max_depth[i],
@@ -3251,8 +3322,8 @@ Bosque óptimo
 ```{r}
 set.seed(123)
 modelo  <- ranger(
-  formula   = song_popularity ~ .,
-  data      = train_reg,
+  formula   = song_popularity ~ .-key3,
+  data      = datos,
   num.trees = 5000,
   mtry=2,
   max.depth = 20,
@@ -3260,28 +3331,27 @@ modelo  <- ranger(
   seed      = 123
 )
 print(modelo)
-predicciones <- predict(modelo,data = test)
+predicciones <- predict(modelo,data = TEST)
 predicciones
 importancia_pred <- modelo$variable.importance
 sort(importancia_pred,decreasing=TRUE)
 ```
 
 ```{r}
-test$pred_reg<-predicciones$predictions
-test$RF <- ifelse(test$prob_zero > umbral,
+pred_reg<-predicciones$predictions
+RF <- ifelse(TEST$prob_zero > umbral,
                           0,          
-                          test$pred_reg) 
+                          pred_reg) 
 ```
 
 Submission rf 
 ```{r}
-yp_rf<-test$RF
 # Crear dataframe de submission
-submission7 <- data.frame(ID = test_num$ID, "song_popularity" = yp_rf)
+submission8 <- data.frame(ID = TEST_num$ID, "song_popularity" = RF)
 
 # Exportar a CSV (sin comillas ni índice)
-write.table(submission7, 
-            file = "submission7.csv", 
+write.table(submission8, 
+            file = "submission8.csv", 
             sep = ",",              # separador por comas
             row.names = FALSE, 
             col.names = TRUE, 
@@ -3290,41 +3360,37 @@ write.table(submission7,
 )
 ```
 
-### 12.5.4. Boosting
+### 13.5.4. Boosting
 Con caret
-```{r}
-train <- datos_prepro
-test  <- test_prepro
-```
-
 ```{r}
 library(caret)
 set.seed(1234)
 trControl<-trainControl(method="cv", number=5)
-caret.gbm0 <- train(song_popularity ~ ., method = "gbm", data = train,
+caret.gbm0 <- train(song_popularity ~ ., method = "gbm", data = datos,
                     trControl = trControl, verbose = FALSE)
 caret.gbm0
 ```
+
 ```{r}
 tuneGrid <- data.frame(n.trees =  100, interaction.depth = 3, 
                        n.minobsinnode = 10, shrinkage = c(0.3, 0.1, 0.05, 0.01, 0.005))
-caret.gbm1 <- train(song_popularity ~ ., method = "gbm", data = train,
+caret.gbm1 <- train(song_popularity ~ ., method = "gbm", data = datos,
                     tuneGrid = tuneGrid, trControl = trControl, verbose = FALSE)
 caret.gbm1
 ```
+
 Predicciones
 ```{r}
-pred_boost <- predict(caret.gbm1, newdata = test)
+pred_boost <- predict(caret.gbm1, newdata = TEST)
 ```
 
 ```{r}
-yp_boost<-round(pred_boost,0)
 # Crear dataframe de submission
-submission6 <- data.frame(ID = test_num$ID, "song_popularity" = yp_boost)
+submission10 <- data.frame(ID = TEST_num$ID, "song_popularity" = pred_boost)
 
 # Exportar a CSV (sin comillas ni índice)
-write.table(submission6, 
-            file = "submission6.csv", 
+write.table(submission10, 
+            file = "submission10.csv", 
             sep = ",",              # separador por comas
             row.names = FALSE, 
             col.names = TRUE, 
@@ -3333,4 +3399,38 @@ write.table(submission6,
 )
 ```
 
-### 12.5.5. SVM
+### 13.5.5. SVM
+```{r}
+svm_cv_TEST <- tune("svm",
+               song_popularity ~ .-key3-liveness_boxcox-speechiness,
+               data = datos,
+               kernel = "radial",
+               ranges = list(
+                 cost = 1,
+                 gamma = 0.01
+               ))
+summary(svm_cv_TEST)
+```
+
+```{r}
+modelo_svm_opt_TEST <- svm_cv_TEST$best.model
+pred_svm_TEST <- predict(modelo_svm_opt_TEST, newdata = TEST)
+pred_svm_TEST <- ifelse(TEST$prob_zero > umbral,
+                  0,          
+                  pred_svm_TEST)
+```
+
+```{r}
+# Crear dataframe de submission
+submission9 <- data.frame(ID = TEST_num$ID, "song_popularity" = pred_svm_TEST)
+
+# Exportar a CSV (sin comillas ni índice)
+write.table(submission9, 
+            file = "submission9.csv", 
+            sep = ",",              # separador por comas
+            row.names = FALSE, 
+            col.names = TRUE, 
+            quote = FALSE, 
+            dec = "."               # punto como separador decimal
+)
+```

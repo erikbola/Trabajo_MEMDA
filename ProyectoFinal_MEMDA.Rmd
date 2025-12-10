@@ -1,0 +1,1376 @@
+---
+title: "Regresión de la Popularidad de las canciones"
+author: "Erik Bola, Vega Carmona, Emma Carretero, Sandra González y Raquel Purroy"
+date: 
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# 0. Datos y preliminares 
+
+```{r setup, include=FALSE}
+# Paquetes básicos que usas
+library(tidyverse)   # incluye ggplot2 y dplyr (%>%)
+library(DataExplorer)
+library(inspectdf)
+library(skimr)
+library(SmartEDA)
+library(naniar)
+library(forcats)# utilidades para factors
+library(readr)
+library(dlookr)# para diagnose()
+library(EnvStats) # IQR
+library(dplyr)
+library(purrr)
+
+# Evitar el warning de xts vs dplyr::lag (si lo usas)
+options(xts.warn_dplyr_breaks_lag = FALSE)
+```
+
+```{r}
+datos <- read_csv("train.csv")
+test <- read_csv("test.csv")
+```
+Preliminares
+```{r}
+# Conversión a factores
+datos$key <- factor(datos$key)
+datos$audio_mode <- factor(datos$audio_mode) # 0 = menor, 1 = mayor
+datos$time_signature <- factor(datos$time_signature)
+
+clases <- sapply(datos, class)
+
+varNum <- names(clases)[which(clases %in% c("numeric", "integer"))]
+varNum<-varNum[!varNum %in% c("ID","song_popularity")]
+varCat <- names(clases)[which(clases %in% c("character", "factor"))]
+```
+
+# 1.NA's
+
+Se imputa la base de datos original, con outliers. Posteriormente se hará el tratamiento de atípicos, ya que antes de esta imputación no es posible debido a que todos los métodos requieren de una base de datos completa (sin NA's). 
+
+```{r, warning=FALSE, include=FALSE}
+library(mice)
+tempData <- mice(datos,m=5,maxit=50,meth='pmm',seed=500)
+datos<-complete(tempData,1)
+```
+
+```{r}
+# Comprobación
+plot_missing(datos)
+```
+
+# 1.1. Tratamiento de outliers posterior
+
+## 1.1.1. LOF
+
+Se tratarán los outliers en las variables en las que se detectaron anteriormente valores atípicos univariantemente mediante **z-score**, el método que mejor resultado dio, ya que se presentan distribuciones asimétricas de las cuales convienen escalar.
+
+Función para un histograma z-score con líneas ±3
+```{r}
+hist_z3 <- function(vec, var_name, binwidth = NULL) {
+  # Filtrar no finitos
+  x <- vec[is.finite(vec)]
+  # Si no hay datos válidos o sd = 0, devolver un panel informativo
+  if (length(x) == 0 || sd(x, na.rm = TRUE) == 0) {
+    return(
+      ggplot() +
+        annotate("text", x = 0, y = 0, label = paste0(var_name, "\nSin variación o sin datos válidos")) +
+        theme_void() + labs(title = var_name)
+    )
+  }
+  # z-scores (scale devuelve matriz -> convertir a numérico)
+  z <- as.numeric(scale(x))
+
+  # Binwidth automático si no se especifica
+  if (is.null(binwidth)) {
+    r <- diff(range(z))
+    binwidth <- if (is.finite(r) && r > 0) r / 30 else 0.5
+  }
+
+  ggplot(data.frame(z = z), aes(x = z)) +
+    geom_histogram(binwidth = binwidth, fill = "skyblue", color = "black", boundary = 0) +
+    geom_vline(xintercept = c(-3, 3), linetype = "dashed", color = "red", linewidth = 0.8) +
+    theme_minimal() +
+    labs(title = var_name, x = "z-score", y = "Frecuencia")
+}
+```
+
+```{r, warning=FALSE, message=FALSE}
+# Construir todos los plots
+plots_lof <- lapply(varNum[c(10,1,9,2,4,3,7)], function(v) hist_z3(datos[[v]], v))
+
+# Mostrar en cuadrícula
+library(patchwork)
+wrap_plots(plots_lof, ncol = 3) + plot_annotation(title = "Histogramas (z-score)")
+```
+
+S excluye la variable predictora $instrumentalness$, puesto que su varianza es prácticamente nula; céntrandose su distribución en un intervalo muy reducido. 
+
+```{r, warning=FALSE, message=FALSE}
+library(Rlof)
+datos_scaled<-scale(datos[,varNum])
+outliers_scores_lof<-Rlof::lof(datos_scaled[,varNum[c(1,9,2,4,3,7)]], k=5)
+plot(density(outliers_scores_lof))
+```
+
+Siguiendo el criterio **LOF**, se tratarán como valores outliers aquellos que se encuentren fuera del percentil 95% según los *scores*.
+
+```{r}
+umbral_lof<-quantile(outliers_scores_lof,0.95)
+lof<-as.integer(outliers_scores_lof>umbral_lof)
+table(lof)
+```
+
+
+### 1.1.2. Mahalanobis
+
+Se mantiene la exclusión de $instrumntalness$ del conjunto de variables, debido a su baja varianza, de modo que la matriz se convertiría en singular (no invertible).
+
+```{r}
+datos_maha<-scale(datos[,varNum[-10]])
+distancia_mahalanobis<-mahalanobis(datos_maha,colMeans(datos_maha),cov(datos_maha))
+plot(density(distancia_mahalanobis))
+```
+
+```{r, include=FALSE}
+umbral_maha<-qchisq(p=0.99, df=ncol(datos_maha))
+mahalanobis<-as.integer(distancia_mahalanobis>umbral_maha)
+table(mahalanobis)
+528/13186
+```
+
+Se recurre al uso del **Mahalanobis** robusto porque con estos datos no se puede aproximar la ditribución de las distancias a una $\chi^2$, pues no todas las variables son normales. Para el vector de Mahalanobis, se cogen aquellas observaciones fuera del cuantil del 99% como outliers.
+
+```{r, include=F}
+umbral_maha<-quantile(distancia_mahalanobis, 0.99)
+mahalanobis<-as.integer(distancia_mahalanobis>umbral_maha)
+table(mahalanobis)
+```
+
+### 1.1.3. Mahalanobis Robusto
+```{r, warning=FALSE, message=FALSE}
+library(chemometrics)
+dis<-chemometrics::Moutlier(datos_maha, quantile=0.99, plot=TRUE)
+```
+
+```{r, warning=FALSE, message=FALSE, include=F}
+umbral_mcd<-quantile(dis$rd,0.99)
+mcd<-as.integer(dis$rd>umbral_mcd)
+table(mcd)
+```
+
+
+### 1.1.4. Isolation Forest
+
+```{r, warning=FALSE, message=FALSE, include=FALSE}
+library(solitude)
+library(tidyverse)
+# Datos escalados con solo numéricas y excluyendo instrumentalness
+datos_iso<-scale(datos[,varNum[-10]])
+isoforest<-isolationForest$new(
+  sample_size = as.integer(nrow(datos_iso)/2),
+  num_trees = 500,
+  replace = TRUE,
+  seed=123
+)
+isoforest$fit(dataset=datos_iso)
+pred_iso<-isoforest$predict(data=datos_iso)
+head(pred_iso)
+```
+
+```{r, include=F}
+umbral_iso <- quantile(pred_iso$anomaly_score, 0.95)
+iso<-as.integer(pred_iso$anomaly_score>umbral_iso)
+table(iso)
+```
+
+
+### 1.1.5. Ensbamble de métodos
+
+Para evitar la dependencia de un único criterio y aumentar la robustez del análisis, se utilizaron cuatro métodos complementarios: **LOF** (densidad local), **Mahalanobis clásico** (distancia global), **Mahalanobis robusto** (*MCD*) (distancia robusta al núcleo multivariante) y **Isolation Forest** (aislamiento en particiones aleatorias). La clasificación final de outliers se obtiene mediante una regla de consenso (*ensembling*), asignando una observación como outlier únicamente cuando al menos dos métodos la detectaron como tal.
+
+```{r, include=F}
+mat_out <- cbind(lof, mahalanobis, mcd, iso)
+outlier<-as.integer(rowSums(mat_out)>=2)
+colSums(cbind(mat_out, outlier))
+table(outlier)
+```
+
+```{r, warning=FALSE, message=FALSE}
+library(plotly)
+
+# Selección de las variables
+vars_plot <- c("liveness", "speechiness", "loudness")
+
+# Uso de los datos escalados SOLO para estas 3 variables
+datos_plot <- as.data.frame(scale(datos[, vars_plot]))
+
+# Añadir el vector outlier final
+datos_plot$outlier <- factor(outlier, labels = c("Normal", "Outlier"))
+
+# Gráfico 3D
+plot_ly(
+  data = datos_plot,
+  x = ~liveness,
+  y = ~speechiness,
+  z = ~loudness,
+  color = ~outlier,
+  colors = c("Normal" = "black", "Outlier" = "red"),
+  type = "scatter3d",
+  mode = "markers",
+  marker = list(size = 3)
+) %>%
+  layout(
+    title = "Visualización 3D de Outliers (Ensamble)",
+    scene = list(
+      xaxis = list(title = "liveness (scaled)"),
+      yaxis = list(title = "speechiness (scaled)"),
+      zaxis = list(title = "loudness (scaled)")
+    )
+  )
+```
+
+
+Como se observa, la detección se considera buena, ya que gráficamente los puntos identificados como outliers son aquellos que están fuera de la nube de puntos con alta densidad. Los que están en rojo cerca de la nube tal vez no presentan mucha lejanía con respecto a estas tres variables, pero sí que la presentan en alguna de las otras variables con valores atípicos.
+
+Por lo tanto, se añade esta variable artificial *outlier* a la base de datos original.
+
+```{r, include=F}
+datos$outlier<-outlier
+```
+
+```{r}
+summary(datos)
+```
+
+Se guarda esta base de datos en un dataset *backup*
+
+```{r, include=F}
+datos_backup<-datos
+```
+
+
+
+# 3. Ingeniería de variables
+
+## 3.1 Selección de variables
+
+### 3.1.1 Varianza nula
+
+Se identifican aquellas variables cuya varianza es práctica o completamente nula, ya que, al tener valores muy similares entre ellos, se consideran constantes y pueden estar altamente correlacionadas con el término independiente del modelo, lo que solo introduciría ruido.  
+
+```{r, warning=FALSE, message=FALSE}
+library(caret)
+# install.packages("idealista18")
+require(idealista18)
+library(tidyverse)
+
+numeric_cols <- sapply(datos, is.numeric)
+datos_num <- datos[, numeric_cols]
+# ncol(datos_num); ncol(datos)
+varianza <- nearZeroVar(datos_num, saveMetrics = T)
+varianza
+```
+
+Esta salida muestra que no hay ninguna variable con varianza exactamente igual a cero ni cercana a 0, lo cual indica que no hay necesidad de eliminar ninguna variable por falta de información. Sin embargo, las variables referentes a $liveness$, $danceability$, $audio_valence$, $energy$, $speechiness$ y, especialmente, $time_signature$, $key$ y $audio_mode$, tienen un *percentUnique* relativamente bajo, dando a entender que tienen pocos valores distintos. 
+
+
+### 3.1.2 Correlación entre variables
+
+Una manera alternativa de mirar si hay variables redundantes es calculando la correlación entre las variables predictoras. Un coeficiente alto de correlación puede generar un problema de multicolinealidad, que puede afectar negativamente a las predicciones del modelo. Mediante un gráfico den correlaciones entre las variables numéricas, se observó una elevada correlación entre **acousticness** y **loudness**, **instrumentalness** y **loudness**, **loudness** y **energy**, **acousticness** y **energy**.
+
+Se pretende encontrar correlaciones que superen un coeficiente de 0.6:
+
+```{r, warning=FALSE}
+datos_cor <- cor(na.omit(datos_num))
+(alta_cor <- findCorrelation(datos_cor, cutoff = 0.6))
+```
+
+A través de la visualización del gráfico de correlaciones deducimos qué variables presentan una elevada correlación:
+
+```{r, warning=FALSE, message=FALSE}
+library("corrplot")
+
+matriz_corr <- cor(datos_cor)
+corrplot(matriz_corr, method = "circle")
+```
+
+La representación gráfica muestra una evidencia clara de correlación entre las variables previamente mencionadas. Este hecho impulsa a eliminar alguna de estas variables que ya están explicadas por otras.
+
+### 3.1.3 Linear combinations
+
+Se identifica si existen combinaciones lineales entre las variables predictoras, otra medida que informa acerca de la posible correlación existente entre ellas. 
+
+```{r, warning=FALSE, message=FALSE}
+#datos_num_na <- tidyr::drop_na(datos_num) # Es necesario eliminar los NA.
+(combos <- findLinearCombos(datos_num[,-c(1,12)]))
+```
+
+Mediante este método, no se detectan combinaciones lineales entre las variables. Esto conlleva a deducir que no hay ninguna variable que contenga esencialmente la misma información que otra desde una perspectiva lineal.
+
+
+### 6.1.4 Wrapper
+
+Se aplica el método **Wrapper** para seleccionar las variables más relevantes del modelo.
+
+```{r, warning=FALSE, message=FALSE}
+# install.packages("caret")
+library(caret)
+
+# Paso 1: Preparar los datos
+datos_num <- datos[, sapply(datos, is.numeric)]
+#datos_num <- na.omit(datos_num)
+
+# Separar variable objetivo
+target <- datos_num$song_popularity
+input <- datos_num[, colnames(datos_num) != "song_popularity"]
+
+# Eliminar variables altamente correlacionadas (correlación > 0.6)
+matriz_cor <- cor(input)
+variables_redundantes <- findCorrelation(matriz_cor, cutoff = 0.6)
+cat("Variables eliminadas por alta correlación:", length(variables_redundantes), "\n")
+
+if(length(variables_redundantes) > 0) {
+  input <- input[, -variables_redundantes]
+  cat("Variables restantes después de filtrar correlación:", ncol(input), "\n")
+}
+
+# Paso 2: Configurar control de RFE (técnica para seleccionar las mejores variables eliminando iterativamente las menos importantes)
+control <- rfeControl(functions = lmFuncs,  # Usa regresión lineal
+                      method = "cv",        # Validación cruzada
+                      number = 5)           # 5-fold CV
+
+# Paso 3: Ejecutar RFE
+set.seed(123)
+resultados_rfe <- rfe(input, target,
+                      sizes = 1:(ncol(input)),  # Probar con 1 hasta todas las variables
+                      rfeControl = control)
+
+# Paso 4: Ver variables seleccionadas
+print(resultados_rfe$optVariables)
+```
+
+La técnica de **Eliminación Recursiva de Características** (*RFE: Recursive Feature Elimination*) es un tipo de método **Wrapper** que selecciona las variables más relevantes para un modelo entrenándolo varias veces mediante un proceso de **validación cruzada** y eliminando en cada iteración las variables menos importantes. El algoritmo termina hasta encontrar el subconjunto que ofrece el mejor rendimiento. Cabe destacar que dicho método ha tenido en cuenta la correlación entre las variables predictoras. De esta manera, se ha obtenido un conjunto de variables explicativas que no superan un coeficiente de correlación de 0,6. 
+Estas variables son: $danceability$, $audio_valence$, $speechiness$, $liveness$, $instrumentalness$, $acousticness$ y $loudness$.
+
+
+El análisis exhaustivo de selección de variables reveló un **conjunto óptimo** de **7 predictores** para el modelo de popularidad musical. Tras eliminar variables redundantes por alta correlación (> 0.6), el método **Wrapper RFE** identificó las características más relevantes: $danceability$, $audio_valence$, $speechiness$, $liveness$, $instrumentalness$, $acousticness$ y $loudness$. Este conjunto representa una reducción del 46% en dimensionalidad mientras mantiene el poder predictivo, asegurando la estabilidad del modelo mediante la eliminación de multicolinealidad.
+
+
+## 3.2 Transformación de variables
+
+El objetivo de este apartado es mejorar la distribución de las variables, reducir el sesgo y preparar los datos para los algoritmos de modelado.
+
+### 3.2.1 Análisis inicial de distribuciones
+
+```{r, warning=FALSE, message=FALSE}
+library(caret)
+library(e1071)
+library(recipes)
+library(tidyverse)
+
+cat("ANÁLISIS INICIAL DE DISTRIBUCIONES Y SESGO:\n")
+
+# Función para calcular estadísticas de sesgo
+analizar_sesgo <- function(datos) {
+  skewness_values <- sapply(datos, function(x) {
+    if(is.numeric(x)) {
+      sesgo <- e1071::skewness(x, na.rm = TRUE)
+      tipo_sesgo <- ifelse(abs(sesgo) > 1, "ALTO SESGO",
+                          ifelse(abs(sesgo) > 0.5, "SESGO MODERADO", "BAJO SESGO"))
+      return(c(Sesgo = round(sesgo, 3), Tipo = tipo_sesgo))
+    } else {
+      return(c(Sesgo = NA, Tipo = "NO NUMÉRICA"))
+    }
+  })
+  
+  t(skewness_values) %>% as.data.frame() %>% 
+    rownames_to_column("Variable")
+}
+
+# Aplicar análisis de sesgo a nuestras variables seleccionadas
+variables_seleccionadas <- c("danceability", "audio_valence", "speechiness", 
+                            "liveness", "instrumentalness", "acousticness", "loudness")
+
+datos_transformar <- datos_num[, variables_seleccionadas]
+resultados_sesgo <- analizar_sesgo(datos_transformar)
+print(resultados_sesgo)
+```
+
+Mientras que las variables correspondientes a $danceability$ y $audio_valence$ presentan un sesgo bajo, el resto de variables obtienen un valor de sesgo potencialmente alto, a excepción de la variable $acousticness$, donde el sesgo es moderado. 
+
+### 3.2.2 Visualización de distribuciones originales
+
+```{r, warning=FALSE, message=FALSE}
+cat("\n VISUALIZACIÓN DE DISTRIBUCIONES ORIGINALES:\n")
+
+# Función para graficar distribuciones
+graficar_distribuciones <- function(datos, titulo) {
+  datos_long <- datos %>%
+    pivot_longer(everything(), names_to = "Variable", values_to = "Valor")
+  
+  ggplot(datos_long, aes(x = Valor)) +
+    geom_histogram(aes(y = ..density..), fill = "steelblue", alpha = 0.7, bins = 30) +
+    geom_density(color = "red", linewidth = 1) +
+    facet_wrap(~ Variable, scales = "free") +
+    labs(title = titulo,
+         x = "Valor", y = "Densidad") +
+    theme_minimal()
+}
+
+# Graficar distribuciones originales
+graficar_distribuciones(datos_transformar, "Distribuciones Originales - Antes de Transformación")
+```
+
+### 3.2.3 Aplicación de las transformaciones
+
+```{r, warning=FALSE, message=FALSEs}
+# Identificar variables que necesitan transformación (|sesgo| > 0.5)
+variables_a_transformar <- resultados_sesgo %>%
+  filter(Tipo %in% c("ALTO SESGO", "SESGO MODERADO")) %>%
+  pull(Variable)
+
+cat("VARIABLES A TRANSFORMAR (|sesgo| > 0.5):\n")
+print(variables_a_transformar)
+
+# Aplicar diferentes transformaciones
+datos_transformados <- datos_transformar
+
+for(var in variables_a_transformar) {
+  if(var %in% colnames(datos_transformados)) {
+    
+    # Obtener valores mínimos para ajustar transformaciones
+    min_val <- min(datos_transformados[[var]], na.rm = TRUE)
+    
+    # Aplicar transformaciones según el tipo de variable
+    if(min_val >= 0) {
+      # Para variables con valores positivos
+      datos_transformados[[paste0(var, "_log")]] <- log1p(datos_transformados[[var]])
+      datos_transformados[[paste0(var, "_sqrt")]] <- sqrt(datos_transformados[[var]])
+      
+      # Transformación Box-Cox (requiere valores estrictamente positivos)
+      if(min_val > 0) {
+        bc_transform <- BoxCoxTrans(datos_transformados[[var]])
+        datos_transformados[[paste0(var, "_boxcox")]] <- predict(bc_transform, datos_transformados[[var]])
+      }
+    }
+    
+  }
+}
+
+cat("TRANSFORMACIONES APLICADAS:\n")
+cat("Variables originales:", ncol(datos_transformar), "\n")
+```
+
+Las variables con sesgo alto (mayor que 0.5 en valor absoluto), son: $speechiness$, $liveness$, $instrumentalness$, $acousticness$ y $loudness$. Se aplican 3 transformaciones a cada una:
+
+  **1.** `log`: Permite reducir el sesgo positivo fuerte y funciona mejor cuando hay valores extremos positivos.
+  
+  **2.** `sqrt`: Se usa especialmente cuando el sesgo es moderado, y es menos agresiva que log, pero buena para datos con ceros.
+
+  **3.** `box-cox`: Encuentra la transformación óptima automáticamente, con el requisito de que los valores sean estrictamente positivos.
+  
+
+```{r}
+any(datos_transformados$instrumentalness==0)
+```
+
+Dado que $instrumentalness$ contiene algún valor igual a 0, se han aplicado solo las dos primeras transformaciones. 
+
+### 3.2.4 Evaluación de Transformaciones
+
+A continuación, se realiza una evaluativa:
+
+```{r, warning=FALSE, message=FALSE}
+# Función para evaluar efectividad de transformaciones
+evaluar_transformaciones <- function(var_original, vars_transformadas, nombre_original) {
+  resultados <- data.frame()
+  
+  sesgo_original <- e1071::skewness(var_original, na.rm = TRUE)
+  
+  for(transform_name in names(vars_transformadas)) {
+    if(transform_name != nombre_original) {
+      var_transformada <- vars_transformadas[[transform_name]]
+      sesgo_transformado <- e1071::skewness(var_transformada, na.rm = TRUE)
+      
+      reduccion_sesgo <- abs(sesgo_original) - abs(sesgo_transformado)
+      
+      resultados <- rbind(resultados, data.frame(
+        Variable = nombre_original,
+        Transformacion = transform_name,
+        Sesgo_Original = round(sesgo_original, 3),
+        Sesgo_Transformado = round(sesgo_transformado, 3),
+        Reduccion_Sesgo = round(reduccion_sesgo, 3),
+        Efectiva = ifelse(abs(sesgo_transformado) < abs(sesgo_original) & 
+                          abs(sesgo_transformado) < 1, "SÍ", "NO")
+      ))
+    }
+  }
+  
+  return(resultados)
+}
+
+# Evaluar todas las transformaciones
+resultados_evaluacion <- data.frame()
+
+for(var in variables_a_transformar) {
+  # Obtener todas las versiones de la variable
+  vars_relacionadas <- datos_transformados %>% 
+    dplyr::select(dplyr::starts_with(var))
+  
+  eval_var <- evaluar_transformaciones(
+    datos_transformar[[var]], 
+    vars_relacionadas,
+    var
+  )
+  
+  resultados_evaluacion <- rbind(resultados_evaluacion, eval_var)
+}
+
+cat("EVALUACIÓN DE TRANSFORMACIONES:\n")
+print(resultados_evaluacion)
+
+# Seleccionar la mejor transformación para cada variable
+mejores_transformaciones <- resultados_evaluacion %>%
+  filter(Efectiva == "SÍ") %>%
+  group_by(Variable) %>%
+  filter(abs(Sesgo_Transformado) == min(abs(Sesgo_Transformado))) %>%
+  ungroup()
+
+cat("\n MEJORES TRANSFORMACIONES SELECCIONADAS:\n")
+print(mejores_transformaciones)
+```
+
+
+El análisis de transformaciones reveló que **Box-Cox** fue **óptima** para **variables** con **alto sesgo** ($speechiness$, $liveness$), logrando reducciones superiores al 90%, mientras que la **raíz cuadrada** resultó más **efectiva** para **sesgos moderados** ($acousticness$). En cambio, para la variable $instrumentalness$ no se salió efectiva ninguna de las dos modificaciones aplicadas. 
+Las transformaciones seleccionadas aseguran que todas las variables cumplan con $|sesgo| < 0.5$, mejorando significativamente los supuestos de normalidad para el modelado posterior.
+
+## 3.3 Extracción de variables
+
+### 3.3.1 Preparar datos para PCA
+
+```{r, warning=FALSE, message=FALSE}
+# INSTALAR Y CARGAR LIBRERÍAS
+#install.packages(c("FactoMineR", "factoextra", "nFactors"))
+library(FactoMineR)
+library(factoextra)
+library(nFactors)
+
+cat("COMIENZO EXTRACCIÓN DE VARIABLES\n")
+cat("===================================\n\n")
+
+
+cat("1. PREPARANDO DATOS PARA ANÁLISIS...\n")
+
+# Usar las 7 variables óptimas del método RFE (con las transformaciones aplicadas)
+
+variables_para_analisis <- c("danceability", "speechiness", "liveness_boxcox", "instrumentalness", "acousticness_boxcox", "loudness", "audio_valence")
+
+# Crear dataset solo con estas variables (excluir objetivo)
+datos_analisis <- datos_transformados[, variables_para_analisis]
+
+# Estandarizar (importante para PCA)
+datos_estandarizados <- scale(datos_analisis)
+
+cat("   • Variables analizadas:", paste(variables_para_analisis, collapse = ", "), "\n")
+cat("   • Dimensiones datos:", dim(datos_estandarizados), "\n\n")
+```
+
+Se estudian las 7 variables que el método **Wrapper** había proporcionado como conjunto óptimo, pero teniendo en cuenta la transformación de las 3 variables anteriores. 
+
+
+### 3.3.2 Análisis de Componentes Principales (PCA)
+
+```{r, warning=FALSE}
+cat("2. EJECUTANDO ANÁLISIS DE COMPONENTES PRINCIPALES...\n")
+
+pca_resultado <- prcomp(datos_estandarizados, scale. = TRUE)
+
+# Resumen simple
+cat("   • PCA completado\n")
+cat("   • Número de componentes:", length(pca_resultado$sdev), "\n\n")
+```
+
+Dado que se disponen de 7 variables, existen 7 componentes principales. 
+
+
+### 3.3.3 Determinar Componentes Principales
+
+```{r, warning=FALSE, message=FALSE}
+cat("3. IDENTIFICANDO COMPONENTES IMPORTANTES...\n")
+
+# Calcular varianza explicada
+varianza_explicada <- pca_resultado$sdev^2 / sum(pca_resultado$sdev^2) * 100
+
+# Mostrar varianza por componente
+cat("   Varianza explicada por componente:\n")
+for(i in 1:length(varianza_explicada)) {
+  cat("   • PC", i, ": ", round(varianza_explicada[i], 1), "%\n", sep = "")
+}
+
+# Regla simple: componentes que explican >10% de varianza
+componentes_importantes <- which(varianza_explicada > 10)
+cat("\n   • Componentes que explican >10% varianza: PC", 
+    paste(componentes_importantes, collapse = ", PC"), "\n", sep = "")
+```
+
+El **análisis** de **componentes principales** sobre las **7 variables óptimas** revela una estructura dimensional bien definida. Los primeros **5 componentes** explican individualmente **más del 10% de la varianza**, acumulando **84.9%** de la **información total**.
+
+PC1 (26.8%) emerge como la dimensión principal, capturando casi un cuarto de la variabilidad del conjunto de datos. La **distribución gradual** de la **varianza** entre los componentes indica que **ninguna** **variable** **domina** excesivamente el **análisis**, sino que **todas** **contribuyen** de manera **balanceada** a las diferentes dimensiones latentes.
+
+Este resultado confirma que las **7 variables seleccionadas** por **RFE** contienen información complementaria y valiosa para el modelo, justificando la retención de múltiples componentes que capturan distintas facetas de las características musicales relevantes para predecir la popularidad.
+
+
+### 3.3.4 Crear nuevas variables (componentes)
+
+Se crean las nuevas variables, las cuales corresponden a las 5 primeras componentes principales, que no son más que combinaciones lineales de las variables originales. De este modo, se consigue explicar más de un 85% de la variabilidad de $song_popularity$.
+
+```{r, warning=FALSE, message=FALSE}
+cat("\n4. CREANDO NUEVAS VARIABLES...\n")
+
+if(length(componentes_importantes) > 0) {
+  # Extraer scores de componentes importantes
+  nuevos_componentes <- as.data.frame(pca_resultado$x[, componentes_importantes])
+  
+  # Dar nombres descriptivos
+  nombres_descriptivos <- c()
+  for(i in 1:length(componentes_importantes)) {
+    nombre <- paste0("Componente_", i)
+    nombres_descriptivos <- c(nombres_descriptivos, nombre)
+  }
+  colnames(nuevos_componentes) <- nombres_descriptivos
+  
+  # Añadir al dataset original
+  datos_final <- cbind(datos_transformados, nuevos_componentes)
+  
+  cat("   • Nuevas variables creadas:", paste(nombres_descriptivos, collapse = ", "), "\n")
+  
+} else {
+  datos_final <- datos_final_transformado
+  cat("   • No se crearon nuevos componentes (poca varianza explicada)\n\n")
+}
+```
+
+
+```{r, warning=FALSE, message=FALSE}
+dat<-datos_transformados[,c("speechiness", "liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence", "loudness", "instrumentalness")]
+
+library("corrplot")
+
+matriz_corr <- cor(dat)
+corrplot(matriz_corr, method = "circle")
+```
+
+Dado que en el **Análisis de Componentes Principales** ha dado como resultado que con **5 componentes principales** se explica más de un 83% de la variabilidad de la variable de respuesta, solo es necesario considerar 5 variables como predictoras. En este gráfico de correlaciones se observa que entre $loudness$ y $acousticness_boxcox$ la correlación sigue siendo algo elevada. Esto significa que una variable ya está explicada por otra, así que se decide suprimir $loudness$. 
+
+Por otra parte, como la variable $instrumentalness$ no reduce significativamente el sesgo mediante ninguna transformación, para evitar que este efecto pueda repercutir negativamente en la predicción del modelo, se decide eliminarla. 
+
+Por lo tanto, las 5 variables seleccionadas son: $\text{speechiness, liveness_boxcox, acousticness_boxcox, danceability, audio_valence}$
+
+```{r}
+datos_final$outlier<-datos$outlier
+```
+
+### 3.3.5. Variables dummies
+
+Estudiamos las distribuciones del output segun las variables categoricas para estudiar la inclusión de una de ellas y si está será a traves de la dumificación.
+```{r}
+boxplot(song_popularity~audio_mode,data=datos)
+boxplot(song_popularity~key,data=datos)
+boxplot(song_popularity~time_signature,data=datos)
+```
+
+Con audio_mode vemos que la distribución en ambas categorias (0 y 1) és idéntica, lo que nos induce a rechazar su inclusión en el conjunto de variables seleccionadas.
+
+En key, cada una de los 12 boxplots siguen un mismo patrón exceptuando el asociado a una respuesta de 1 y 3 en dicha variable. Lo que nos hace decidir incluir una variable dummies para recoger este efecto en nuestros modelos.
+
+Por último, en el caso de time_signature, observamos 4 distribuciones semejantes en valores del 1 al 5 y un claro peso superior en valores inferiores a la media general cuando esta variable es igual a 0. Con esta información, decidimos incluir una dummies que discretice cuando una observación sea 0 en dicha variable y cuando no.
+
+```{r}
+datos_final$key1 <- ifelse(datos$key == 1, 1, 0)
+datos_final$key3<-ifelse(datos$key == 3, 1, 0)
+```
+
+Nota: Posteriormente, en el entrenamiento y evaluación de los modelos, hemos observado como en todos ellos tanto key1 como time_signature0 carecian de efecto sobre el output. Obteniamos una importancia igual a 0 en algunas pruebas. Esto nos ha llevado a excluirlas del conjunto de variables.
+
+Por lo tanto con lo dicho anteriormente creamos la bbdd con el conjunto de variables seleccionado.
+```{r}
+datos<-datos_final[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","outlier","key3")]
+datos$song_popularity<-datos_backup$song_popularity
+```
+
+Además, ahora que hemos obtenido la bbdd con la selección definitiva de variables, procedemos a extraer de esta aquellas observaciones consideradas outliers. Antes de esto, guardamos una bbdd sin outliers que nos servirá para hacer pruebas de modelos en los que se incluyan y en los que no.
+```{r}
+datos_full <- datos
+datos <- subset(datos, outlier == 0)
+datos <- subset(datos, select=-outlier)
+```
+
+
+# 3.3.6. Tratamiento de 0's en la popularidad de las canciones
+
+**Procedimiento**:
+
+Se aplica un procedimiento mixto clasificación + regresión, muy típico cuando la variable respuesta contiene ceros que distorsionan métricas como el **MAPE**. 
+
+*Pipeline en R*:
+
+  - Separa la base en dos subconjuntos ($\text{song_popularity = 0}$ y $\text{song_popularity > 0}$).
+
+  - Entrena un clasificador para predecir la probabilidad de que una observación tenga popularidad 0.
+
+  - Entrena un modelo de regresión solo con los casos con popularidad > 0.
+
+  - En el test, combina ambos modelos: Si la probabilidad de ser 0 es alta --> predicción = 0
+                                       Si no --> predicción = predicción del modelo de regresión
+
+
+A partir de la base de datos **datos_final**
+
+```{r, warning=FALSE, message=FALSE, include=FALSE}
+# Crear variable binaria para el modelo de clasificación
+datos$is_zero <- ifelse(datos$song_popularity == 0, 1, 0)
+
+# Separar en train y test (mantener proporciones)
+set.seed(123)
+library(caret)
+
+train_index <- createDataPartition(datos$song_popularity, p = 0.7, list = FALSE)
+
+train <- datos[train_index, ]
+test  <- datos[-train_index, ]
+
+# Entrenar un modelo clasificador para predecir ceros
+library(randomForest)
+
+modelo_clasif <- randomForest(
+  as.factor(is_zero) ~ . -song_popularity,
+  data = train,
+  ntree = 300
+)
+
+# Obtener probabilidades en test
+test$prob_zero <- predict(modelo_clasif, newdata = test, type = "prob")[,2]
+
+# Entrenar el modelo de regresión solo con casos > 0
+train_reg <- subset(train, song_popularity > 0)
+
+modelo_reg <- randomForest(
+  song_popularity ~ . -is_zero,
+  data = train_reg,
+  ntree = 300
+)
+
+# Predicciones en test
+test$pred_reg <- predict(modelo_reg, newdata = test)
+
+# Combinar ambos modelos (reglas de imputación)
+## umbral, de 0.5
+umbral <- 0.5
+
+test$pred_final <- ifelse(test$prob_zero > umbral,
+                          0,          # si es muy probable que sea 0
+                          test$pred_reg)  # si no, usar el modelo de regresión
+
+# Guardamos los datasets
+# Guardamos el datasets definitivos.
+train<-train[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","key3","song_popularity")]
+test<-test[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","key3","prob_zero","song_popularity")]
+datos<-subset(datos, select=-is_zero)
+```
+
+Creamos lo mismo para la bbdd **datos_full** con outliers
+```{r}
+# Crear variable binaria para el modelo de clasificación
+datos_full$is_zero <- ifelse(datos_full$song_popularity == 0, 1, 0)
+
+# Separar en train y test (mantener proporciones)
+set.seed(123)
+library(caret)
+
+train_index_full <- createDataPartition(datos_full$song_popularity, p = 0.7, list = FALSE)
+
+train_full <- datos_full[train_index_full, ]
+test_full  <- datos_full[-train_index_full, ]
+
+# Entrenar un modelo clasificador para predecir ceros
+library(randomForest)
+
+modelo_clasif_full <- randomForest(
+  as.factor(is_zero) ~ . -song_popularity,
+  data = train_full,
+  ntree = 300
+)
+
+# Obtener probabilidades en test
+test_full$prob_zero <- predict(modelo_clasif_full, newdata = test_full, type = "prob")[,2]
+
+# Entrenar el modelo de regresión solo con casos > 0
+train_reg_full <- subset(train_full, song_popularity > 0)
+
+modelo_reg_full <- randomForest(
+  song_popularity ~ . -is_zero,
+  data = train_reg_full,
+  ntree = 300
+)
+
+# Predicciones en test
+test_full$pred_reg <- predict(modelo_reg_full, newdata = test_full)
+
+# Combinar ambos modelos (reglas de imputación)
+## umbral, de 0.5
+umbral <- 0.5
+
+test_full$pred_final <- ifelse(test_full$prob_zero > umbral,
+                          0,          # si es muy probable que sea 0
+                          test_full$pred_reg)  # si no, usar el modelo de regresión
+
+# Guardamos el datasets definitivos.
+train_full<-train_full[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","key3","song_popularity")]
+test_full<-test_full[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","key3","prob_zero","song_popularity")]
+datos_full<-subset(datos_full, select=-is_zero)
+```
+
+### 3.3.7. Dataset final
+
+La bbdd llamada datos que será la base de datos preprocesada y con la que se trabajará en el modelado posterior. Dicha bbdd será utilizada como conjunto train en la obtención del vector de predicciones a partir del conjunto test para las submissions.
+
+Esta bbdd contará con el siguiente conjunto de variables, resultado del trabajo realizado en este apartado: speechiness,liveness_boxcox, acousticness_boxcox, danceability, audio_valence, key1, key3 y time_signature0. Una última variable llamada prob_zero, presente solamente en el subconjunto test, no será incluida en los modelos, ya que está servirá únicamente para obtener los vectores de predicciones definitivos pasando por el resultado del modelo clasificatorio de 0's en el output.
+
+Por otro lado, han sido aquellas instancias que hayan sido detectadas como outliers en el ensamble de metodos en su respectivo apartado, logrando así eliminar el posible sesgo que estos puedisen añadir al resultado de nuestros modelos.
+
+```{r}
+#save(datos, train, test, datos_full, train_full, test_full, file = "Datos_Prepocesados.RData")
+#load("Datos_Prepocesados.RData")
+```
+
+# 4. Mejor modelo
+
+Se selecciona el modelo que haya conseguido una mejor *submission* como modelo final y definitivo. Este corresponde al ajustado mediante la técnica **Random Forest**.
+
+```{r, include=FALSE}
+library(DAAG)
+library(mlbench)
+library(caret)
+library(pROC)
+library(printr)
+library(randomForest)
+library(ranger)
+```
+
+## 5.1 Optimización de parámetros
+
+```{r, inlcude=FALSE, message=FALSE, warning=FALSE}
+# Creación de la gridsearch
+library(ranger)
+require(utils)
+param_grid = expand.grid(num_trees = c(50, 100, 500, 1000, 5000),
+             mtry= c(2,3,4,5),max_depth = c(1, 3, 10, 20))
+head(param_grid)
+```
+
+## 5.2 Ajuste del modelo con cada combinación
+
+```{r, include=FALSE}
+oob_error = rep(NA, nrow(param_grid))
+
+for(i in 1:nrow(param_grid)){
+  
+  modelo <- ranger(
+    formula   = song_popularity ~ .,
+    data      = train, 
+    num.trees = param_grid$num_trees[i],
+    mtry      = param_grid$mtry[i],
+    max.depth = param_grid$max_depth[i],
+    seed      = 123
+  )
+  
+  oob_error[i] <- sqrt(modelo$prediction.error)
+}
+```
+
+## 5.3 Resultados
+
+```{r, include=FALSE, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+
+resultados <- param_grid
+resultados$oob_error <- oob_error
+resultados <- resultados %>% arrange(oob_error)
+resultados
+head(resultados[,4])
+p<-which(resultados[,4]==min(resultados[,4]))
+resultados[p,]
+```
+
+## 5.4 Bosque óptimo
+
+```{r}
+set.seed(123)
+modelo_full  <- ranger(
+  formula   = song_popularity ~ .,
+  data      = train_full,
+  num.trees = 5000,
+  mtry=3,
+  max.depth = 20,
+  importance= "impurity",
+  seed      = 123
+)
+print(modelo_full)
+predicciones_full <- predict(modelo_full,data = test_full)
+predicciones_full
+importancia_pred_full <- modelo_full$variable.importance
+sort(importancia_pred_full,decreasing=TRUE)
+```
+
+## 5.5 KPI's
+
+```{r}
+accuracy <- function(pred_fin, obs, na.rm = FALSE, 
+                     tol = sqrt(.Machine$double.eps)) {
+  err <- obs - pred_fin     # Errors
+  if(na.rm) {
+    is.a <- !is.na(err)
+    err <- err[is.a]
+    obs <- obs[is.a]
+  }  
+  perr <- 100*err/pmax(obs, tol)  # % errors
+  return(c(
+    me = mean(err),           # Mean error
+    rmse = sqrt(mean(err^2)), # sqrt mean squared error
+    mae = mean(((obs)-(pred_fin))/(obs+1)),# mean absolute error
+    mpe= 100*mean(((obs)-(pred_fin))/(obs+1)),#mean percentage error
+    mape = 100*mean(abs(((obs)-(pred_fin))/(obs+1))),   # mean absolute percentage error
+    r.squared = 1 - sum(err^2)/sum((obs - mean(obs))^2)
+  ))
+}
+```
+
+```{r}
+pred_reg_full<-predicciones_full$predictions
+pred_RF_full <- ifelse(test_full$prob_zero > umbral,
+                          0,          
+                          pred_reg_full) 
+(kpi_RF<-accuracy(pred_RF_full, test_full$song_popularity))
+```
+
+El **RMSE** obtenido a partir del modelo ajustado en base al Random Forest es de 20.353.
+
+# 6. Submission Random Forest (RF)
+
+Tras seleccionar el mejor modelo, se obtiene el vector con los valores de la *submission* de acuerdo al método final, el Random Forest, realizando primero el preproceasamiento en la bbdd TEST. 
+
+Para evitar solapamientos de bbdd el conjunto test correspondera al test de entrenamiento y el conjunto TEST corresponderá al utilizado para la predicción de las submissions.
+
+## 6.1. Preliminares
+```{r}
+TEST<-read_csv("test.csv")
+TEST$key <- factor(TEST$key)
+TEST$audio_mode <- factor(TEST$audio_mode) # 0 = menor, 1 = mayor
+TEST$time_signature <- factor(TEST$time_signature)
+
+clases <- sapply(TEST, class)
+
+varNum <- names(clases)[which(clases %in% c("numeric", "integer"))]
+varNum<-varNum[!varNum %in% c("ID")]
+varCat <- names(clases)[which(clases %in% c("character", "factor"))]
+```
+
+## 6.2. Na's
+```{r, warning=FALSE, include=FALSE}
+library(mice)
+tempData <- mice(TEST,m=5,maxit=50,meth='pmm',seed=500)
+TEST<-complete(tempData,1)
+```
+
+## 6.3. Outliers
+
+Lof
+```{r}
+library(Rlof)
+TEST_scaled<-scale(TEST[,varNum])
+TEST_scores_lof<-Rlof::lof(TEST_scaled[,varNum[c(1,9,2,4,3,7)]], k=5)
+plot(density(TEST_scores_lof))
+```
+```{r}
+umbral_TEST_lof<-quantile(TEST_scores_lof,0.95)
+lof_TEST<-as.integer(TEST_scores_lof>umbral_TEST_lof)
+table(lof_TEST)
+```
+
+Mahalanobis
+```{r}
+TEST_maha<-scale(TEST[,varNum[-10]])
+distancia_TEST_mahalanobis<-mahalanobis(TEST_maha,colMeans(TEST_maha),cov(TEST_maha))
+plot(density(distancia_TEST_mahalanobis))
+```
+```{r}
+umbral_TEST_maha<-quantile(distancia_TEST_mahalanobis, 0.99)
+mahalanobis_TEST<-as.integer(distancia_TEST_mahalanobis>umbral_TEST_maha)
+table(mahalanobis_TEST)
+```
+
+Mahalanobis Robusto (MCD)
+```{r}
+library(chemometrics)
+dis_TEST<-chemometrics::Moutlier(TEST_maha, quantile=0.99, plot=TRUE)
+```
+```{r}
+umbral_TEST_mcd<-quantile(dis_TEST$rd,0.99)
+mcd_TEST<-as.integer(dis_TEST$rd>umbral_TEST_mcd)
+table(mcd_TEST)
+```
+
+Isolation Forest
+```{r}
+library(solitude)
+library(tidyverse)
+#datos escalados con solo numericas y excluyendo instrentalness
+TEST_iso<-scale(TEST[,varNum[-10]])
+isoforest_TEST<-isolationForest$new(
+  sample_size = as.integer(nrow(TEST_iso)/2),
+  num_trees = 500,
+  replace = TRUE,
+  seed=123
+)
+isoforest_TEST$fit(dataset=TEST_iso)
+pred_TEST_iso<-isoforest_TEST$predict(data=TEST_iso)
+head(pred_TEST_iso)
+```
+```{r}
+umbral_TEST_iso <- quantile(pred_TEST_iso$anomaly_score, 0.95)
+iso_TEST<-as.integer(pred_TEST_iso$anomaly_score>umbral_TEST_iso)
+table(iso_TEST)
+```
+
+Ensamble de metodos
+```{r}
+mat_out_TEST <- cbind(lof_TEST, mahalanobis_TEST, mcd_TEST, iso_TEST)
+outlier_TEST<-as.integer(rowSums(mat_out_TEST)>=2)
+colSums(cbind(mat_out_TEST, outlier_TEST))
+table(outlier_TEST)
+```
+```{r}
+library(plotly)
+
+# Seleccionamos las variables
+vars_plot <- c("liveness", "speechiness", "loudness")
+
+# Usamos los datos escalados SOLO para estas 3 variables
+TEST_plot <- as.data.frame(scale(TEST[, vars_plot]))
+
+# Añadimos el vector outlier final
+TEST_plot$outlier <- factor(outlier_TEST, labels = c("Normal", "Outlier"))
+
+# Gráfico 3D
+plot_ly(
+  data = TEST_plot,
+  x = ~liveness,
+  y = ~speechiness,
+  z = ~loudness,
+  color = ~outlier_TEST,
+  colors = c("Normal" = "black", "Outlier" = "red"),
+  type = "scatter3d",
+  mode = "markers",
+  marker = list(size = 3)
+) %>%
+  layout(
+    title = "Visualización 3D de Outliers (Ensamble)",
+    scene = list(
+      xaxis = list(title = "liveness (scaled)"),
+      yaxis = list(title = "speechiness (scaled)"),
+      zaxis = list(title = "loudness (scaled)")
+    )
+  )
+```
+```{r}
+TEST$outlier<-outlier_TEST
+TEST_backup<-TEST
+```
+
+## 6.4. Ingenieria de variables
+
+Analisis
+```{r transformacion_variables, warning=FALSE}
+library(caret)
+library(e1071)
+library(recipes)
+library(tidyverse)
+
+numeric_cols <- sapply(TEST, is.numeric)
+TEST_num <- TEST[, numeric_cols]
+# Usar el dataset con las variables seleccionadas del paso anterior
+# Asumimos que tenemos: datos_final con las 7 variables seleccionadas
+
+cat("ANÁLISIS INICIAL DE DISTRIBUCIONES Y SESGO:\n")
+
+# Función para calcular estadísticas de sesgo
+analizar_sesgo <- function(TEST) {
+  skewness_values <- sapply(TEST, function(x) {
+    if(is.numeric(x)) {
+      sesgo <- e1071::skewness(x, na.rm = TRUE)
+      tipo_sesgo <- ifelse(abs(sesgo) > 1, "ALTO SESGO",
+                           ifelse(abs(sesgo) > 0.5, "SESGO MODERADO", "BAJO SESGO"))
+      return(c(Sesgo = round(sesgo, 3), Tipo = tipo_sesgo))
+    } else {
+      return(c(Sesgo = NA, Tipo = "NO NUMÉRICA"))
+    }
+  })
+  
+  t(skewness_values) %>% as.data.frame() %>% 
+    rownames_to_column("Variable")
+}
+
+# Aplicar análisis de sesgo a nuestras variables seleccionadas
+variables_seleccionadas <- c("danceability", "audio_valence", "speechiness", 
+                             "liveness", "instrumentalness", "acousticness", "loudness")
+
+TEST_transformar <- TEST_num[, variables_seleccionadas]
+resultados_sesgo <- analizar_sesgo(TEST_transformar)
+print(resultados_sesgo)
+```
+
+Aplicacion transformacion
+```{r aplicacion_transformaciones, warning=FALSE}
+# Identificar variables que necesitan transformación (|sesgo| > 0.5)
+variables_a_transformar <- resultados_sesgo %>%
+  filter(Tipo %in% c("ALTO SESGO", "SESGO MODERADO")) %>%
+  pull(Variable)
+
+cat("VARIABLES A TRANSFORMAR (|sesgo| > 0.5):\n")
+print(variables_a_transformar)
+
+# Aplicar diferentes transformaciones
+TEST_transformados <- TEST_transformar
+
+for(var in variables_a_transformar) {
+  if(var %in% colnames(TEST_transformados)) {
+    
+    # Obtener valores mínimos para ajustar transformaciones
+    min_val <- min(TEST_transformados[[var]], na.rm = TRUE)
+    
+    # Aplicar transformaciones según el tipo de variable
+    if(min_val >= 0) {
+      # Para variables con valores positivos
+      TEST_transformados[[paste0(var, "_log")]] <- log1p(TEST_transformados[[var]])
+      TEST_transformados[[paste0(var, "_sqrt")]] <- sqrt(TEST_transformados[[var]])
+      
+      # Transformación Box-Cox (requiere valores estrictamente positivos)
+      if(min_val > 0) {
+        bc_transform <- BoxCoxTrans(TEST_transformados[[var]])
+        TEST_transformados[[paste0(var, "_boxcox")]] <- predict(bc_transform, TEST_transformados[[var]])
+      }
+    }
+    
+  }
+}
+
+cat("TRANSFORMACIONES APLICADAS:\n")
+cat("Variables originales:", ncol(TEST_transformar), "\n")
+```
+PCA
+```{r extraccion_variables, warning=FALSE}
+# INSTALAR Y CARGAR LIBRERÍAS
+#install.packages(c("FactoMineR", "factoextra", "nFactors"))
+library(FactoMineR)
+library(factoextra)
+library(nFactors)
+
+cat("COMIENZO EXTRACCIÓN DE VARIABLES\n")
+cat("===================================\n\n")
+
+
+cat("1. PREPARANDO DATOS PARA ANÁLISIS...\n")
+
+# Usar las 7 variables óptimas del método RFE (con las transformaciones aplicadas)
+
+variables_para_analisis <- c("danceability", "speechiness", "liveness_boxcox", "instrumentalness", "acousticness_boxcox", "loudness", "audio_valence")
+
+# Crear dataset solo con estas variables (excluir objetivo)
+TEST_analisis <- TEST_transformados[, variables_para_analisis]
+
+# Estandarizar (importante para PCA)
+TEST_estandarizados <- scale(TEST_analisis)
+
+cat("   • Variables analizadas:", paste(variables_para_analisis, collapse = ", "), "\n")
+cat("   • Dimensiones datos:", dim(TEST_estandarizados), "\n\n")
+```
+
+```{r, warning=FALSE}
+cat("2. EJECUTANDO ANÁLISIS DE COMPONENTES PRINCIPALES...\n")
+
+pca_resultado_TEST <- prcomp(TEST_estandarizados, scale. = TRUE)
+
+# Resumen simple
+cat("   • PCA completado\n")
+cat("   • Número de componentes:", length(pca_resultado_TEST$sdev), "\n\n")
+```
+
+```{r, warning=FALSE}
+cat("3. IDENTIFICANDO COMPONENTES IMPORTANTES...\n")
+
+# Calcular varianza explicada
+varianza_explicada_TEST <- pca_resultado_TEST$sdev^2 / sum(pca_resultado_TEST$sdev^2) * 100
+
+# Mostrar varianza por componente
+cat("   Varianza explicada por componente:\n")
+for(i in 1:length(varianza_explicada_TEST)) {
+  cat("   • PC", i, ": ", round(varianza_explicada_TEST[i], 1), "%\n", sep = "")
+}
+
+# Regla simple: componentes que explican >10% de varianza
+componentes_importantes_TEST <- which(varianza_explicada_TEST > 10)
+cat("\n   • Componentes que explican >10% varianza: PC", 
+    paste(componentes_importantes_TEST, collapse = ", PC"), "\n", sep = "")
+```
+
+Creacion variables finales
+```{r, warning=FALSE}
+cat("\n4. CREANDO NUEVAS VARIABLES...\n")
+
+if(length(componentes_importantes_TEST) > 0) {
+  # Extraer scores de componentes importantes
+  nuevos_componentes_TEST <- as.data.frame(pca_resultado_TEST$x[, componentes_importantes_TEST])
+  
+  # Dar nombres descriptivos
+  nombres_descriptivos_TEST <- c()
+  for(i in 1:length(componentes_importantes_TEST)) {
+    nombre <- paste0("Componente_", i)
+    nombres_descriptivos_TEST <- c(nombres_descriptivos_TEST, nombre)
+  }
+  colnames(nuevos_componentes_TEST) <- nombres_descriptivos_TEST
+  
+  # Añadir al dataset original
+  TEST_final <- cbind(TEST_transformados, nuevos_componentes_TEST)
+  
+  cat("   • Nuevas variables creadas:", paste(nombres_descriptivos_TEST, collapse = ", "), "\n")
+  
+} else {
+  TEST_final <- TEST_transformados
+  cat("   • No se crearon nuevos componentes (poca varianza explicada)\n\n")
+}
+```
+```{r}
+TEST_final$outlier<-outlier_TEST
+```
+
+Creación de dummies
+```{r}
+TEST_final$key3<-ifelse(TEST$key == 3, 1, 0)
+```
+
+Selección final
+```{r}
+TEST<-TEST_final[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","key3")]
+TEST$song_popularity<-TEST_backup$song_popularity
+```
+
+Creación de la prob_zero
+```{r}
+# Crear variable binaria para el modelo de clasificación
+datos$is_zero <- ifelse(datos$song_popularity == 0, 1, 0)
+
+# Entrenar un modelo clasificador para predecir ceros
+library(randomForest)
+
+modelo_clasif <- randomForest(
+  as.factor(is_zero) ~ .,
+  data = subset(datos, select=-song_popularity),
+  ntree = 300
+)
+
+# Obtener probabilidades en test
+TEST$prob_zero <- predict(modelo_clasif, newdata = TEST, type = "prob")[,2]
+
+## umbral, de 0.5
+umbral <- 0.5
+
+# Eliminamos la variable is_zero del conjunto datos (TRAIN)
+datos<-subset(datos, select=-is_zero)
+```
+
+## 6.5. Modelo Random Forest
+
+Creación de la grid search
+```{r}
+library(ranger)
+require(utils)
+param_grid = expand.grid(num_trees = c(50, 100, 500, 1000, 5000),
+             mtry= c(2,3,4,5),max_depth = c(1, 3, 10, 20))
+head(param_grid)
+```
+Ajustamos un modelo con cada combinación de la grid
+```{r}
+oob_error = rep(NA, nrow(param_grid))
+
+for(i in 1:nrow(param_grid)){
+  
+  modelo <- ranger(
+    formula   = song_popularity ~ .,
+    data      = datos, 
+    num.trees = param_grid$num_trees[i],
+    mtry      = param_grid$mtry[i],
+    max.depth = param_grid$max_depth[i],
+    seed      = 123
+  )
+  
+  oob_error[i] <- sqrt(modelo$prediction.error)
+}
+```
+Resultados
+```{r}
+library(dplyr)
+library(tidyr)
+
+resultados <- param_grid
+resultados$oob_error <- oob_error
+resultados <- resultados %>% arrange(oob_error)
+resultados
+head(resultados[,4])
+p<-which(resultados[,4]==min(resultados[,4]))
+resultados[p,]
+```
+Bosque óptimo
+```{r}
+set.seed(123)
+modelo  <- ranger(
+  formula   = song_popularity ~ .-key3,
+  data      = datos,
+  num.trees = 5000,
+  mtry=2,
+  max.depth = 20,
+  importance= "impurity",
+  seed      = 123
+)
+print(modelo)
+predicciones <- predict(modelo,data = TEST)
+predicciones
+importancia_pred <- modelo$variable.importance
+sort(importancia_pred,decreasing=TRUE)
+```
+
+```{r}
+pred_reg<-predicciones$predictions
+RF <- ifelse(TEST$prob_zero > umbral,
+                          0,          
+                          pred_reg) 
+```
+
+Submission rf 
+```{r}
+# Crear dataframe de submission
+submission8 <- data.frame(ID = TEST_num$ID, "song_popularity" = RF)
+
+# Exportar a CSV (sin comillas ni índice)
+write.table(submission8, 
+            file = "submission8.csv", 
+            sep = ",",              # separador por comas
+            row.names = FALSE, 
+            col.names = TRUE, 
+            quote = FALSE, 
+            dec = "."               # punto como separador decimal
+)
+```
