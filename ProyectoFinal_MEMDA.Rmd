@@ -6,6 +6,7 @@ output:
   pdf_document: default
   html_document: default
 ---
+Nota: En la linea 881 se encuentra el load() con los objetos principales resultados del preprocesamiento. 
 
 # 0. Datos y preliminares 
 
@@ -118,7 +119,7 @@ plot(density(outliers_scores_lof))
 Siguiendo el criterio **LOF**, se tratarán como valores outliers aquellos que se encuentren fuera del percentil 95% según los *scores*.
 
 ```{r}
-umbral_lof<-quantile(outliers_scores_lof,0.95)
+umbral_lof<-quantile(outliers_scores_lof,0.975)
 lof<-as.integer(outliers_scores_lof>umbral_lof)
 table(lof)
 ```
@@ -135,16 +136,16 @@ plot(density(distancia_mahalanobis))
 ```
 
 ```{r, include=FALSE}
-umbral_maha<-qchisq(p=0.99, df=ncol(datos_maha))
+umbral_maha<-qchisq(p=0.999, df=ncol(datos_maha))
 mahalanobis<-as.integer(distancia_mahalanobis>umbral_maha)
 table(mahalanobis)
-528/13186
+216/13186
 ```
 
 Se recurre al uso del **Mahalanobis** robusto porque con estos datos no se puede aproximar la ditribución de las distancias a una $\chi^2$, pues no todas las variables son normales. Para el vector de Mahalanobis, se cogen aquellas observaciones fuera del cuantil del 99% como outliers.
 
 ```{r, include=F}
-umbral_maha<-quantile(distancia_mahalanobis, 0.99)
+umbral_maha<-quantile(distancia_mahalanobis, 0.999)
 mahalanobis<-as.integer(distancia_mahalanobis>umbral_maha)
 table(mahalanobis)
 ```
@@ -152,11 +153,11 @@ table(mahalanobis)
 ### 1.1.3. Mahalanobis Robusto
 ```{r, warning=FALSE, message=FALSE}
 library(chemometrics)
-dis<-chemometrics::Moutlier(datos_maha, quantile=0.99, plot=TRUE)
+dis<-chemometrics::Moutlier(datos_maha, quantile=0.999, plot=TRUE)
 ```
 
 ```{r, warning=FALSE, message=FALSE, include=F}
-umbral_mcd<-quantile(dis$rd,0.99)
+umbral_mcd<-quantile(dis$rd,0.999)
 mcd<-as.integer(dis$rd>umbral_mcd)
 table(mcd)
 ```
@@ -181,7 +182,7 @@ head(pred_iso)
 ```
 
 ```{r, include=F}
-umbral_iso <- quantile(pred_iso$anomaly_score, 0.95)
+umbral_iso <- quantile(pred_iso$anomaly_score, 0.975)
 iso<-as.integer(pred_iso$anomaly_score>umbral_iso)
 table(iso)
 ```
@@ -251,7 +252,7 @@ Se guarda esta base de datos en un dataset *backup*
 datos_backup<-datos
 ```
 
-
+Posteriormente, las observaciones que hayan sido detectadas como valores atípicos después de haber realizado el ensamble de metodos serán eliminadas de la bbdd definitiva, eliminando así el posible sesgo que estas puedan añadir en las predicciones de los modelos futuros.
 
 # 3. Ingeniería de variables
 
@@ -691,6 +692,7 @@ Por último, en el caso de time_signature, observamos 4 distribuciones semejante
 ```{r}
 datos_final$key1 <- ifelse(datos$key == 1, 1, 0)
 datos_final$key3<-ifelse(datos$key == 3, 1, 0)
+datos_final$time_signature0 <- ifelse(datos$time_signature == 0, 1, 0)
 ```
 
 Nota: Posteriormente, en el entrenamiento y evaluación de los modelos, hemos observado como en todos ellos tanto key1 como time_signature0 carecian de efecto sobre el output. Obteniamos una importancia igual a 0 en algunas pruebas. Esto nos ha llevado a excluirlas del conjunto de variables.
@@ -833,6 +835,38 @@ test_full<-test_full[,c("speechiness","liveness_boxcox", "acousticness_boxcox", 
 datos_full<-subset(datos_full, select=-is_zero)
 ```
 
+Creamos ahora para datos_backup
+```{r}
+# Crear variable binaria para el modelo de clasificación
+datos_backup$is_zero <- ifelse(datos_backup$song_popularity == 0, 1, 0)
+
+# Dividmos en train y test
+train_backup <- subset(datos_backup[train_index_full, ], 
+                       select = -c(ID,outlier,audio_mode,key,liveness,time_signature))
+test_backup  <- subset(datos_backup[-train_index_full, ], 
+                       select = -c(ID,outlier,audio_mode,key,liveness,time_signature))
+
+# La única transformación que mejora el modelo es la de acousticness
+train_backup$acousticness<-train_full$acousticness_boxcox
+test_backup$acousticness<-test_full$acousticness_boxcox
+
+# Entrenar un modelo clasificador para predecir ceros
+library(randomForest)
+
+modelo_clasif_backup <- randomForest(
+  as.factor(is_zero) ~ . -song_popularity,
+  data = train_backup,
+  ntree = 300
+)
+
+# Obtener probabilidades en test
+test_backup$prob_zero <- predict(modelo_clasif_backup, newdata = test_backup, type = "prob")[,2]
+
+# Guardamos el datasets definitivos.
+train_backup<-subset(train_backup, select=-is_zero)
+test_backup<-subset(test_backup, select=-is_zero)
+datos_backup<-subset(datos_backup, select=-is_zero)
+```
 ### 3.3.7. Dataset final
 
 La bbdd llamada datos que será la base de datos preprocesada y con la que se trabajará en el modelado posterior. Dicha bbdd será utilizada como conjunto train en la obtención del vector de predicciones a partir del conjunto test para las submissions.
@@ -841,9 +875,16 @@ Esta bbdd contará con el siguiente conjunto de variables, resultado del trabajo
 
 Por otro lado, han sido aquellas instancias que hayan sido detectadas como outliers en el ensamble de metodos en su respectivo apartado, logrando así eliminar el posible sesgo que estos puedisen añadir al resultado de nuestros modelos.
 
+Además, después de haber hecho nuevas pruebas modelando con random forest, el modelo que mejores resultados nos ha proporcionado, nos hemos dado cuenta que este modelo funciona mejor otorgandole más variables por mucho que mantengan correlación moderada entre algunas de ellas. A esta bbdd le llamaremos datos_backup y, después de haber testeado el efecto de la inclusión de todas las variables, el conjunto seleccionado de este dataset y que mejor rendimiento a proporcionado és: *loudness, danceability, acousticness_boxcox,energy,audio_valence,tempo,song_duration_ms,speechiness, instrumentalness*. 
+
+Cabe destacar, que anteriormente habiamos extraido de nuestra selección de atributos algunas de las variables recien mencionadas por problemas de variabilidad reducida, correlación o asimetria. No obstante, en este trabajo priorizamos la capacidad predictiva en frente de la explicativa y concluimos que estos problemas no causan ningun efecto preocupante en el devenir de los modelos.
+
 ```{r}
-#save(datos, train, test, datos_full, train_full, test_full, file = "Datos_Prepocesados.RData")
-#load("Datos_Prepocesados.RData")
+#save(datos, train, test, 
+#     datos_full, train_full, test_full, 
+#     datos_backup, train_backup, test_backup,
+#     file = "Datos_Prepocesados.RData")
+load("Datos_Prepocesados.RData")
 ```
 
 # 4. Mejor modelo
@@ -860,7 +901,7 @@ library(randomForest)
 library(ranger)
 ```
 
-## 5.1 Optimización de parámetros
+## 4.1 Optimización de parámetros
 
 ```{r, inlcude=FALSE, message=FALSE, warning=FALSE}
 # Creación de la gridsearch
@@ -871,7 +912,7 @@ param_grid = expand.grid(num_trees = c(50, 100, 500, 1000, 5000),
 head(param_grid)
 ```
 
-## 5.2 Ajuste del modelo con cada combinación
+## 4.2 Ajuste del modelo con cada combinación
 
 ```{r, include=FALSE}
 oob_error = rep(NA, nrow(param_grid))
@@ -880,7 +921,7 @@ for(i in 1:nrow(param_grid)){
   
   modelo <- ranger(
     formula   = song_popularity ~ .,
-    data      = train, 
+    data      = train_backup, 
     num.trees = param_grid$num_trees[i],
     mtry      = param_grid$mtry[i],
     max.depth = param_grid$max_depth[i],
@@ -891,9 +932,9 @@ for(i in 1:nrow(param_grid)){
 }
 ```
 
-## 5.3 Resultados
+## 4.3 Resultados
 
-```{r, include=FALSE, message=FALSE, warning=FALSE}
+```{r, warning=FALSE}
 library(dplyr)
 library(tidyr)
 
@@ -906,27 +947,26 @@ p<-which(resultados[,4]==min(resultados[,4]))
 resultados[p,]
 ```
 
-## 5.4 Bosque óptimo
+## 4.4 Bosque óptimo
 
 ```{r}
 set.seed(123)
-modelo_full  <- ranger(
+modelo_backup  <- ranger(
   formula   = song_popularity ~ .,
-  data      = train_full,
+  data      = train_backup,
   num.trees = 5000,
-  mtry=3,
+  mtry=2,
   max.depth = 20,
   importance= "impurity",
   seed      = 123
 )
-print(modelo_full)
-predicciones_full <- predict(modelo_full,data = test_full)
-predicciones_full
-importancia_pred_full <- modelo_full$variable.importance
-sort(importancia_pred_full,decreasing=TRUE)
+#print(modelo_full)
+predicciones_backup <- predict(modelo_backup,data = test_backup)
+importancia_pred_backup <- modelo_backup$variable.importance
+sort(importancia_pred_backup,decreasing=TRUE)
 ```
 
-## 5.5 KPI's
+## 4.5 KPI's
 
 ```{r}
 accuracy <- function(pred_fin, obs, na.rm = FALSE, 
@@ -950,22 +990,22 @@ accuracy <- function(pred_fin, obs, na.rm = FALSE,
 ```
 
 ```{r}
-pred_reg_full<-predicciones_full$predictions
-pred_RF_full <- ifelse(test_full$prob_zero > umbral,
+pred_reg_backup<-predicciones_backup$predictions
+pred_RF_backup <- ifelse(test_backup$prob_zero > umbral,
                           0,          
-                          pred_reg_full) 
-(kpi_RF<-accuracy(pred_RF_full, test_full$song_popularity))
+                          pred_reg_backup) 
+(kpi_RF<-accuracy(pred_RF_backup, test_backup$song_popularity))
 ```
 
-El **RMSE** obtenido a partir del modelo ajustado en base al Random Forest es de 20.353.
+El **RMSE** obtenido a partir del modelo ajustado en base al Random Forest es de 20.5327.
 
-# 6. Submission Random Forest (RF)
+# 5. Submission Random Forest (RF)
 
 Tras seleccionar el mejor modelo, se obtiene el vector con los valores de la *submission* de acuerdo al método final, el Random Forest, realizando primero el preproceasamiento en la bbdd TEST. 
 
 Para evitar solapamientos de bbdd el conjunto test correspondera al test de entrenamiento y el conjunto TEST corresponderá al utilizado para la predicción de las submissions.
 
-## 6.1. Preliminares
+## 5.1. Preliminares
 ```{r}
 TEST<-read_csv("test.csv")
 TEST$key <- factor(TEST$key)
@@ -979,14 +1019,14 @@ varNum<-varNum[!varNum %in% c("ID")]
 varCat <- names(clases)[which(clases %in% c("character", "factor"))]
 ```
 
-## 6.2. Na's
+## 5.2. Na's
 ```{r, warning=FALSE, include=FALSE}
 library(mice)
 tempData <- mice(TEST,m=5,maxit=50,meth='pmm',seed=500)
 TEST<-complete(tempData,1)
 ```
 
-## 6.3. Outliers
+## 5.3. Outliers
 
 Lof
 ```{r}
@@ -1091,7 +1131,7 @@ TEST$outlier<-outlier_TEST
 TEST_backup<-TEST
 ```
 
-## 6.4. Ingenieria de variables
+## 5.4. Ingenieria de variables
 
 Analisis
 ```{r transformacion_variables, warning=FALSE}
@@ -1264,11 +1304,18 @@ TEST_final$key3<-ifelse(TEST$key == 3, 1, 0)
 
 Selección final
 ```{r}
-TEST<-TEST_final[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","key3")]
+TEST<-TEST_final[,c("speechiness","liveness_boxcox", "acousticness_boxcox", "danceability", "audio_valence","key3","outlier")]
 TEST$song_popularity<-TEST_backup$song_popularity
 ```
 
-Creación de la prob_zero
+Creacion bbdd con y sin outliers
+```{r}
+TEST_full <- TEST
+TEST <- subset(TEST, outlier == 0)
+TEST <- subset(TEST, select=-outlier)
+```
+
+Creación de la prob_zero para TEST
 ```{r}
 # Crear variable binaria para el modelo de clasificación
 datos$is_zero <- ifelse(datos$song_popularity == 0, 1, 0)
@@ -1292,7 +1339,64 @@ umbral <- 0.5
 datos<-subset(datos, select=-is_zero)
 ```
 
-## 6.5. Modelo Random Forest
+Creación de la prob_zero para TEST_full
+```{r}
+# Crear variable binaria para el modelo de clasificación
+datos_full$is_zero <- ifelse(datos_full$song_popularity == 0, 1, 0)
+
+# Entrenar un modelo clasificador para predecir ceros
+library(randomForest)
+
+modelo_clasif_full <- randomForest(
+  as.factor(is_zero) ~ .,
+  data = subset(datos_full, select=-song_popularity),
+  ntree = 300
+)
+
+# Obtener probabilidades en test
+TEST_full$prob_zero <- predict(modelo_clasif_full, newdata = TEST_full, type = "prob")[,2]
+
+## umbral, de 0.5
+umbral <- 0.5
+
+# Eliminamos la variable is_zero del conjunto datos (TRAIN)
+datos_full<-subset(datos_full, select=-is_zero)
+```
+Creación de la prob_zero para TEST_backup. Llamaremos _BACKUP para no sobreescribir sobre _backup.
+```{r}
+# Seleccionamos las variables 
+datos_BACKUP <- subset(datos_backup, 
+                       select = -c(ID,outlier,audio_mode,key,liveness,time_signature))
+TEST_BACKUP  <- subset(TEST_backup, 
+                       select = -c(ID,outlier,audio_mode,key,liveness,time_signature))
+
+# La única transformación que mejora el modelo es la de acousticness
+datos_BACKUP$acousticness<-datos_full$acousticness_boxcox
+TEST_BACKUP$acousticness<-TEST_full$acousticness_boxcox
+
+# Crear variable binaria para el modelo de clasificación
+datos_BACKUP$is_zero <- ifelse(datos_BACKUP$song_popularity == 0, 1, 0)
+
+# Entrenar un modelo clasificador para predecir ceros
+library(randomForest)
+
+modelo_clasif_BACKUP <- randomForest(
+  as.factor(is_zero) ~ .,
+  data = subset(datos_BACKUP, select=-song_popularity),
+  ntree = 300
+)
+
+# Obtener probabilidades en test
+TEST_BACKUP$prob_zero <- predict(modelo_clasif_BACKUP, newdata = TEST_BACKUP, type = "prob")[,2]
+
+## umbral, de 0.5
+umbral <- 0.5
+
+# Eliminamos la variable is_zero del conjunto datos (TRAIN)
+datos_BACKUP<-subset(datos_BACKUP, select=-is_zero)
+```
+
+## 5.5. Modelo Random Forest
 
 Creación de la grid search
 ```{r}
@@ -1302,7 +1406,7 @@ param_grid = expand.grid(num_trees = c(50, 100, 500, 1000, 5000),
              mtry= c(2,3,4,5),max_depth = c(1, 3, 10, 20))
 head(param_grid)
 ```
-Ajustamos un modelo con cada combinación de la grid
+Ajustamos un modelo con cada combinación de la grid (hecho una vez solo debido a coste computacional alto)
 ```{r}
 oob_error = rep(NA, nrow(param_grid))
 
@@ -1310,7 +1414,7 @@ for(i in 1:nrow(param_grid)){
   
   modelo <- ranger(
     formula   = song_popularity ~ .,
-    data      = datos, 
+    data      = datos_BACKUP, 
     num.trees = param_grid$num_trees[i],
     mtry      = param_grid$mtry[i],
     max.depth = param_grid$max_depth[i],
@@ -1333,28 +1437,27 @@ head(resultados[,4])
 p<-which(resultados[,4]==min(resultados[,4]))
 resultados[p,]
 ```
-Bosque óptimo
+Bosque óptimo (num_trees= 5000, mtry=3, max_depth=20)
 ```{r}
 set.seed(123)
 modelo  <- ranger(
-  formula   = song_popularity ~ .-key3,
-  data      = datos,
+  formula   = song_popularity ~ .,
+  data      = datos_BACKUP,
   num.trees = 5000,
-  mtry=2,
+  mtry=3,
   max.depth = 20,
   importance= "impurity",
   seed      = 123
 )
-print(modelo)
-predicciones <- predict(modelo,data = TEST)
-predicciones
+#print(modelo)
+predicciones <- predict(modelo,data = TEST_BACKUP)
 importancia_pred <- modelo$variable.importance
 sort(importancia_pred,decreasing=TRUE)
 ```
 
 ```{r}
 pred_reg<-predicciones$predictions
-RF <- ifelse(TEST$prob_zero > umbral,
+RF <- ifelse(TEST_BACKUP$prob_zero > umbral,
                           0,          
                           pred_reg) 
 ```
@@ -1362,11 +1465,11 @@ RF <- ifelse(TEST$prob_zero > umbral,
 Submission rf 
 ```{r}
 # Crear dataframe de submission
-submission8 <- data.frame(ID = TEST_num$ID, "song_popularity" = RF)
+submission_RF <- data.frame(ID = TEST_num$ID, "song_popularity" = RF)
 
 # Exportar a CSV (sin comillas ni índice)
-write.table(submission8, 
-            file = "submission8.csv", 
+write.table(submission_RF, 
+            file = "submission_RF.csv", 
             sep = ",",              # separador por comas
             row.names = FALSE, 
             col.names = TRUE, 
