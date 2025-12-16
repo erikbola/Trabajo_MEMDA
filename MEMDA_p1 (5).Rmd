@@ -1883,11 +1883,11 @@ Además, después de haber hecho nuevas pruebas modelando con random forest, el 
 Cabe destacar, que anteriormente habiamos extraido de nuestra selección de atributos algunas de las variables recien mencionadas por problemas de variabilidad reducida, correlación o asimetria. No obstante, en este trabajo priorizamos la capacidad predictiva en frente de la explicativa y concluimos que estos problemas no causan ningun efecto preocupante en el devenir de los modelos.
 
 ```{r}
-save(datos, train, test, 
-     datos_full, train_full, test_full, 
-     datos_backup, train_backup, test_backup,
-     file = "Datos_Prepocesados.RData")
-#load("Datos_Prepocesados.RData")
+#save(datos, train, test, 
+#     datos_full, train_full, test_full, 
+#     datos_backup, train_backup, test_backup,
+#     file = "Datos_Prepocesados.RData")
+load("Datos_Prepocesados.RData")
 ```
 
 # 7. KNN
@@ -2497,6 +2497,7 @@ modelo_rpart <- train(
 modelo_rpart$bestTune   # mejor cp
 modelo_rpart$finalModel
 
+umbral<-0.5
 # Predicciones
 pred_train <- predict(modelo_rpart, newdata = train_backup)
 pred_test  <- predict(modelo_rpart, newdata = test_backup)
@@ -2803,6 +2804,32 @@ accuracy(pred_RF_transf, test_transf$song_popularity)
 ```
 El modelo no mejora con la transformación del output.
 
+#### 10.1.2.6. RF backup redondeando
+```{r}
+set.seed(123)
+modelo_red  <- ranger(
+  formula   = song_popularity ~ .,
+  data      = train_backup,
+  num.trees = 5000,
+  mtry=2,
+  max.depth = 20,
+  importance= "impurity",
+  seed      = 123
+)
+#print(modelo_full)
+predicciones_red <- predict(modelo_red,data = test_backup)
+importancia_pred_red <- modelo_red$variable.importance
+sort(importancia_pred_red,decreasing=TRUE)
+```
+KPI's
+```{r}
+pred_reg_red<-round(predicciones_red$predictions,0)
+pred_RF_red <- ifelse(test_backup$prob_zero > umbral,
+                          0,          
+                          pred_reg_red) 
+accuracy(pred_RF_red, test_backup$song_popularity)
+```
+El rmse no baja internamente redondeando el vector de predicciones.
 
 ## 10.2. Boosting
 
@@ -3645,11 +3672,11 @@ RF <- ifelse(TEST_BACKUP$prob_zero > umbral,
 Submission rf 
 ```{r}
 # Crear dataframe de submission
-submission12 <- data.frame(ID = TEST_num$ID, "song_popularity" = RF)
+submission13 <- data.frame(ID = TEST_num$ID, "song_popularity" = round(RF,0))
 
 # Exportar a CSV (sin comillas ni índice)
-write.table(submission12, 
-            file = "submission12.csv", 
+write.table(submission13, 
+            file = "submission13.csv", 
             sep = ",",              # separador por comas
             row.names = FALSE, 
             col.names = TRUE, 
