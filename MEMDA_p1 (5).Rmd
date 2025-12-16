@@ -2664,6 +2664,145 @@ pred_RF_backup <- ifelse(test_backup$prob_zero > umbral,
                           pred_reg_backup) 
 (kpi_RF<-accuracy(pred_RF_backup, test_backup$song_popularity))
 ```
+Hemos probado otro tipo de modelo mixto pero el modelo no mejora de todos modos.
+```{r}
+pred_reg_backup_r<-predicciones_backup$predictions
+pred_RF_backup_r <- (1-test_backup$prob_zero)*pred_reg_backup_r
+accuracy(pred_RF_backup_r, test_backup$song_popularity)
+```
+
+#### 10.1.2.4. RF probando escalando
+```{r}
+# Identificar variables a escalar
+vars_scale_train <- setdiff(colnames(train_backup), "song_popularity")
+vars_scale_test  <- setdiff(colnames(test_backup),  c("song_popularity", "prob_zero"))
+
+# 2. Calcular media y sd en TRAIN
+means_train <- sapply(train_backup[, vars_scale_train], mean, na.rm = TRUE)
+sds_train   <- sapply(train_backup[, vars_scale_train], sd,   na.rm = TRUE)
+
+# 3. Escalar TRAIN
+train_scaled <- train_backup
+train_scaled[, vars_scale_train] <-
+  scale(train_backup[, vars_scale_train],
+        center = means_train,
+        scale  = sds_train)
+
+# 4. Escalar TEST usando parámetros del TRAIN
+test_scaled <- test_backup
+test_scaled[, vars_scale_test] <-
+  scale(test_backup[, vars_scale_test],
+        center = means_train[vars_scale_test],
+        scale  = sds_train[vars_scale_test])
+
+```
+
+```{r}
+# Medias ~ 0 y sd ~ 1 en TRAIN
+colMeans(train_scaled[, vars_scale_train])
+apply(train_scaled[, vars_scale_train], 2, sd)
+
+# Confirmar que NO se han escalado
+summary(train_scaled$song_popularity)
+summary(test_scaled$prob_zero)
+```
+
+Ajuste del modelo con cada combinación
+```{r, include=FALSE}
+oob_error = rep(NA, nrow(param_grid))
+
+for(i in 1:nrow(param_grid)){
+  
+  modelo <- ranger(
+    formula   = song_popularity ~ .,
+    data      = train_scaled, 
+    num.trees = param_grid$num_trees[i],
+    mtry      = param_grid$mtry[i],
+    max.depth = param_grid$max_depth[i],
+    seed      = 123
+  )
+  
+  oob_error[i] <- sqrt(modelo$prediction.error)
+}
+```
+
+Resultados
+```{r, warning=FALSE}
+library(dplyr)
+library(tidyr)
+
+resultados_scaled <- param_grid
+resultados_scaled$oob_error <- oob_error
+resultados_scaled <- resultados_scaled %>% arrange(oob_error)
+resultados_scaled
+head(resultados_scaled[,4])
+p<-which(resultados_scaled[,4]==min(resultados_scaled[,4]))
+resultados_scaled[p,]
+```
+
+Bosque óptimo
+```{r}
+set.seed(123)
+modelo_scaled <- ranger(
+  formula   = song_popularity ~ .,
+  data      = train_scaled,
+  num.trees = 5000,
+  mtry=2,
+  max.depth = 20,
+  importance= "impurity",
+  seed      = 123
+)
+
+predicciones_scaled <- predict(modelo_scaled,data = test_scaled)
+importancia_pred_scaled <- modelo_scaled$variable.importance
+sort(importancia_pred_scaled,decreasing=TRUE)
+```
+
+KPI's
+
+```{r}
+pred_reg_scaled<-predicciones_scaled$predictions
+pred_RF_scaled <- ifelse(test_scaled$prob_zero > umbral,
+                          0,          
+                          pred_reg_scaled) 
+accuracy(pred_RF_scaled, test_scaled$song_popularity)
+```
+
+Vemos que el modelo escalando las variables predictoras sigue sin mejorar.
+
+#### 10.1.2.5. RF output transformado
+```{r}
+train_transf<-train_backup
+test_transf<-test_backup
+train_transf$song_popularity<-log1p(train_transf$song_popularity)
+```
+
+```{r}
+set.seed(123)
+modelo_transf  <- ranger(
+  formula   = song_popularity ~ .,
+  data      = train_transf,
+  num.trees = 5000,
+  mtry=2,
+  max.depth = 20,
+  importance= "impurity",
+  seed      = 123
+)
+#print(modelo_full)
+predicciones_transf <- predict(modelo_transf,data = test_transf)
+importancia_pred_transf <- modelo_transf$variable.importance
+sort(importancia_pred_transf,decreasing=TRUE)
+```
+KPI's
+```{r}
+pred_reg_transf<-expm1(predicciones_transf$predictions)
+pred_RF_transf<- ifelse(test_transf$prob_zero > 0.5,
+                          0,          
+                          pred_reg_transf) 
+accuracy(pred_RF_transf, test_transf$song_popularity)
+```
+El modelo no mejora con la transformación del output.
+
 
 ## 10.2. Boosting
 
@@ -2873,7 +3012,7 @@ res_rmse <- tibble(
   Modelo = c("KNN", "CART", "RF", "BOOSTING", "SVM"),
   Full   = c(21.9302, 21.6173, 21.0822, 21.4933, 21.7712),
   Datos  = c(21.9734, 21.8506, 21.1420, 21.5290, 21.7215),
-  Backup = c(22.0245, 21.3278, 20.5327, 20.9921, 21.3644)
+  Backup = c(22.0245, 21.3490, 20.5327, 20.9921, 21.3644)
 )
 
 tabla_rmse <- res_rmse %>%
